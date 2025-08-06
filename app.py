@@ -90,6 +90,9 @@ class AutoTradingBot:
         self.is_trading_hours = False
         self.last_scan_date = None
         self.status = "INITIALIZING"
+        self.account_balance = 100000.0  # Default for simulation
+        self.buying_power = 100000.0
+        self.initial_balance = 100000.0
 
         # Initialize API connection
         self._connect_to_alpaca()
@@ -112,7 +115,10 @@ class AutoTradingBot:
                 account = self.api.get_account()
                 self.is_simulation = False
                 self.status = "CONNECTED TO ALPACA"
-                logger.info(f"Connected to Alpaca Paper Trading. Balance: ${float(account.cash):,.2f}")
+                self.account_balance = float(account.cash)
+                self.buying_power = float(account.buying_power)
+                self.initial_balance = float(account.cash)
+                logger.info(f"Connected to Alpaca Paper Trading. Balance: ${self.account_balance:,.2f}")
             except Exception as e:
                 logger.error(f"Failed to connect to Alpaca: {e}")
                 self.is_simulation = True
@@ -294,9 +300,14 @@ class AutoTradingBot:
             'pnl_pct': 0
         }
 
+        cost = entry_price * POSITION_SIZE
+
         if self.is_simulation:
             self.positions[symbol] = position
+            self.account_balance -= cost
+            self.buying_power -= cost
             logger.info(f"BUY (Simulated): {symbol} - {POSITION_SIZE} shares @ ${entry_price:.2f}")
+            logger.info(f"Account Balance: ${self.account_balance:,.2f}")
         else:
             try:
                 order = self.api.submit_order(
@@ -307,7 +318,10 @@ class AutoTradingBot:
                     time_in_force='day'
                 )
                 self.positions[symbol] = position
+                # Update balance from Alpaca
+                self._update_account_balance()
                 logger.info(f"BUY ORDER: {symbol} - Order ID: {order.id}")
+                logger.info(f"Account Balance: ${self.account_balance:,.2f}")
             except Exception as e:
                 logger.error(f"Failed to buy {symbol}: {e}")
                 return
@@ -318,7 +332,8 @@ class AutoTradingBot:
             'action': 'BUY',
             'symbol': symbol,
             'price': entry_price,
-            'shares': POSITION_SIZE
+            'shares': POSITION_SIZE,
+            'balance': self.account_balance
         })
 
     def _check_exit_conditions(self):
@@ -346,9 +361,13 @@ class AutoTradingBot:
             return
 
         pnl = (exit_price - position['entry_price']) * position['shares']
+        proceeds = exit_price * position['shares']
 
         if self.is_simulation:
+            self.account_balance += proceeds
+            self.buying_power += proceeds
             logger.info(f"SELL (Simulated): {symbol} @ ${exit_price:.2f} - {reason} - P&L: ${pnl:.2f}")
+            logger.info(f"Account Balance: ${self.account_balance:,.2f}")
         else:
             try:
                 order = self.api.submit_order(
@@ -358,7 +377,10 @@ class AutoTradingBot:
                     type='market',
                     time_in_force='day'
                 )
+                # Update balance from Alpaca
+                self._update_account_balance()
                 logger.info(f"SELL ORDER: {symbol} - {reason} - P&L: ${pnl:.2f}")
+                logger.info(f"Account Balance: ${self.account_balance:,.2f}")
             except Exception as e:
                 logger.error(f"Failed to sell {symbol}: {e}")
                 return
@@ -378,7 +400,8 @@ class AutoTradingBot:
             'symbol': symbol,
             'price': exit_price,
             'shares': position['shares'],
-            'pnl': pnl
+            'pnl': pnl,
+            'balance': self.account_balance
         })
 
     def _close_all_positions(self):
@@ -428,6 +451,16 @@ class AutoTradingBot:
             logger.info(f"Win Rate: {win_rate:.1f}% ({winners}W/{losers}L)")
         logger.info("="*50)
 
+    def _update_account_balance(self):
+        """Update account balance from Alpaca API"""
+        if not self.is_simulation and self.api:
+            try:
+                account = self.api.get_account()
+                self.account_balance = float(account.cash)
+                self.buying_power = float(account.buying_power)
+            except Exception as e:
+                logger.error(f"Failed to update account balance: {e}")
+
     def get_stats(self):
         """Get current statistics for display"""
         open_positions = sum(1 for p in self.positions.values() if p['status'] == 'OPEN')
@@ -438,6 +471,10 @@ class AutoTradingBot:
 
         win_rate = (winners / total_trades * 100) if total_trades > 0 else 0
 
+        # Update balance if using real API
+        if not self.is_simulation and self.is_trading_hours:
+            self._update_account_balance()
+
         return {
             'status': self.status,
             'mode': 'PAPER TRADING' if not self.is_simulation else 'SIMULATION',
@@ -446,7 +483,10 @@ class AutoTradingBot:
             'total_trades': total_trades,
             'daily_pnl': self.daily_pnl,
             'total_pnl': self.total_pnl,
-            'win_rate': win_rate
+            'win_rate': win_rate,
+            'account_balance': self.account_balance,
+            'buying_power': self.buying_power,
+            'initial_balance': self.initial_balance
         }
 
 # Initialize the bot globally (runs once when app starts)
@@ -481,6 +521,23 @@ with col3:
 
 # Metrics
 st.markdown("---")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("💰 Account Balance",
+              f"${stats['account_balance']:,.2f}",
+              delta=f"${stats['account_balance'] - stats['initial_balance']:,.2f}")
+
+with col2:
+    st.metric("💵 Buying Power",
+              f"${stats['buying_power']:,.2f}")
+
+with col3:
+    st.metric("📈 Total Return",
+              f"{((stats['account_balance'] - stats['initial_balance']) / stats['initial_balance'] * 100):.2f}%",
+              delta=f"${stats['account_balance'] - stats['initial_balance']:,.2f}")
+
+# Second row of metrics
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
