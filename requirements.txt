@@ -3,3 +3,4 @@ pandas
 alpaca-trade-api
 yfinance
 pytz
+requests

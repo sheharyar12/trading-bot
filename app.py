@@ -20,7 +20,7 @@ st.set_page_config(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Try to import alpaca_trade_api
+# Try to import required libraries
 try:
     import alpaca_trade_api as tradeapi
     import yfinance as yf
@@ -29,10 +29,21 @@ except ImportError:
     ALPACA_AVAILABLE = False
     logger.warning("Alpaca API not installed. Running in simulation mode.")
 
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    logger.warning("Requests library not available for notifications")
+
 # CONFIGURATION FROM ENVIRONMENT VARIABLES (Set in Streamlit Cloud Secrets)
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', '')
 ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY', '')
 ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'
+
+# Pushover Configuration for iPhone Notifications
+PUSHOVER_USER_KEY = os.getenv('PUSHOVER_USER_KEY', '')
+PUSHOVER_APP_TOKEN = os.getenv('PUSHOVER_APP_TOKEN', '')
 
 # Trading Parameters (can also be env vars if you want)
 POSITION_SIZE = int(os.getenv('POSITION_SIZE', '100'))
@@ -93,6 +104,8 @@ class AutoTradingBot:
         self.account_balance = 100000.0  # Default for simulation
         self.buying_power = 100000.0
         self.initial_balance = 100000.0
+        self.daily_starting_balance = 100000.0  # Track balance at start of each day
+        self.notifications_enabled = bool(PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN)
 
         # Initialize API connection
         self._connect_to_alpaca()
@@ -127,6 +140,33 @@ class AutoTradingBot:
             self.is_simulation = True
             self.status = "SIMULATION MODE (No API Keys)"
             logger.info("Running in simulation mode - no API keys provided")
+
+    def _send_notification(self, title: str, message: str, priority: int = 0):
+        """Send push notification to iPhone via Pushover"""
+        if not self.notifications_enabled or not REQUESTS_AVAILABLE:
+            return
+
+        try:
+            # Pushover API endpoint
+            url = "https://api.pushover.net/1/messages.json"
+
+            data = {
+                "token": PUSHOVER_APP_TOKEN,
+                "user": PUSHOVER_USER_KEY,
+                "title": title,
+                "message": message,
+                "priority": priority,  # -2=silent, -1=quiet, 0=normal, 1=high, 2=emergency
+                "sound": "cashregister" if "profit" in message.lower() else "pushover"
+            }
+
+            response = requests.post(url, data=data, timeout=5)
+            if response.status_code == 200:
+                logger.info(f"Notification sent: {title}")
+            else:
+                logger.error(f"Failed to send notification: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"Error sending notification: {e}")
 
     def _trading_loop(self):
         """Main trading loop that runs continuously"""
@@ -178,9 +218,20 @@ class AutoTradingBot:
                     # Scan for breakouts once per day (in the morning)
                     if current_minutes < market_open + 30 and self.last_scan_date != now.date():
                         logger.info("Market open - scanning for breakout candidates")
+                        self.daily_starting_balance = self.account_balance  # Store balance at start of day
                         self.candidates = self._scan_for_breakouts()
                         self.last_scan_date = now.date()
                         self.daily_pnl = 0  # Reset daily P&L
+
+                        # Send market open notification
+                        if self.candidates:
+                            self._send_notification(
+                                "🔔 Market Open - Bot Active",
+                                f"Found {len(self.candidates)} breakout candidates\n"
+                                f"Balance: ${self.account_balance:,.2f}\n"
+                                f"Top pick: {self.candidates[0]['symbol']} +{self.candidates[0]['change_pct']:.1%}",
+                                priority=0
+                            )
 
                     # Monitor and trade
                     self._monitor_and_trade()
@@ -326,6 +377,16 @@ class AutoTradingBot:
                 logger.error(f"Failed to buy {symbol}: {e}")
                 return
 
+        # Send buy notification
+        self._send_notification(
+            f"📈 BUY: {symbol}",
+            f"Bought {POSITION_SIZE} shares @ ${entry_price:.2f}\n"
+            f"Stop Loss: ${position['stop_loss']:.2f}\n"
+            f"Take Profit: ${position['take_profit']:.2f}\n"
+            f"Balance: ${self.account_balance:,.2f}",
+            priority=1  # High priority for trades
+        )
+
         self.trades_log.append({
             'date': datetime.now().date(),
             'time': datetime.now().strftime('%H:%M:%S'),
@@ -361,6 +422,7 @@ class AutoTradingBot:
             return
 
         pnl = (exit_price - position['entry_price']) * position['shares']
+        pnl_pct = ((exit_price - position['entry_price']) / position['entry_price']) * 100
         proceeds = exit_price * position['shares']
 
         if self.is_simulation:
@@ -392,6 +454,19 @@ class AutoTradingBot:
 
         self.daily_pnl += pnl
         self.total_pnl += pnl
+
+        # Send sell notification with emoji based on profit/loss
+        emoji = "💰" if pnl > 0 else "📉"
+        color = "green" if pnl > 0 else "red"
+
+        self._send_notification(
+            f"{emoji} SELL: {symbol} - {reason}",
+            f"Sold @ ${exit_price:.2f}\n"
+            f"P&L: ${pnl:+,.2f} ({pnl_pct:+.1f}%)\n"
+            f"Balance: ${self.account_balance:,.2f}\n"
+            f"Daily P&L: ${self.daily_pnl:+,.2f}",
+            priority=1 if abs(pnl) > 500 else 0  # High priority for big trades
+        )
 
         self.trades_log.append({
             'date': datetime.now().date(),
@@ -434,22 +509,61 @@ class AutoTradingBot:
                 return self.simulated_data.get_current_price(symbol)
 
     def _log_daily_summary(self):
-        """Log daily trading summary"""
+        """Log daily trading summary and send end-of-day notification"""
         logger.info("="*50)
         logger.info(f"DAILY SUMMARY - {datetime.now().date()}")
         logger.info(f"Daily P&L: ${self.daily_pnl:.2f}")
         logger.info(f"Total P&L: ${self.total_pnl:.2f}")
 
-        # Count winners/losers
-        winners = sum(1 for t in self.trades_log
+        # Count winners/losers for today
+        today_trades = [t for t in self.trades_log if t.get('date') == datetime.now().date()]
+        winners = sum(1 for t in today_trades
                      if t.get('action', '').startswith('SELL') and t.get('pnl', 0) > 0)
-        losers = sum(1 for t in self.trades_log
+        losers = sum(1 for t in today_trades
                     if t.get('action', '').startswith('SELL') and t.get('pnl', 0) <= 0)
+        total_today = winners + losers
 
-        if winners + losers > 0:
-            win_rate = winners / (winners + losers) * 100
+        if total_today > 0:
+            win_rate = winners / total_today * 100
             logger.info(f"Win Rate: {win_rate:.1f}% ({winners}W/{losers}L)")
+        else:
+            win_rate = 0
+
         logger.info("="*50)
+
+        # Send end-of-day summary notification
+        daily_return = ((self.account_balance - self.daily_starting_balance) / self.daily_starting_balance) * 100
+        total_return = ((self.account_balance - self.initial_balance) / self.initial_balance) * 100
+
+        # Choose emoji based on performance
+        if self.daily_pnl > 1000:
+            emoji = "🚀"
+            priority = 1
+        elif self.daily_pnl > 0:
+            emoji = "✅"
+            priority = 0
+        elif self.daily_pnl < -1000:
+            emoji = "🔴"
+            priority = 1
+        else:
+            emoji = "⚪"
+            priority = 0
+
+        summary_message = (
+            f"Today's P&L: ${self.daily_pnl:+,.2f} ({daily_return:+.2f}%)\n"
+            f"Trades: {total_today} ({winners}W/{losers}L)\n"
+            f"Win Rate: {win_rate:.1f}%\n"
+            f"─────────────\n"
+            f"Balance: ${self.account_balance:,.2f}\n"
+            f"Total Return: {total_return:+.2f}%\n"
+            f"Total P&L: ${self.total_pnl:+,.2f}"
+        )
+
+        self._send_notification(
+            f"{emoji} Market Closed - Daily Summary",
+            summary_message,
+            priority=priority
+        )
 
     def _update_account_balance(self):
         """Update account balance from Alpaca API"""
@@ -624,13 +738,33 @@ with tab4:
     - Stop Loss: -2% | Take Profit: +7%
     - Maximum 5 positions per day
 
-    **Configuration:**
-    - API keys are set via environment variables
-    - No manual intervention needed
-    - Bot runs continuously 24/7
-    - Only trades during market hours
+    **📱 iPhone Notifications:**
     """)
 
+    if bot.notifications_enabled:
+        st.success("✅ Push notifications are ENABLED")
+        st.markdown("""
+        You'll receive notifications for:
+        - 🔔 Market open with top picks
+        - 📈 Every buy order
+        - 💰/📉 Every sell with P&L
+        - 📊 End-of-day summary with total gains/losses
+        """)
+    else:
+        st.warning("⚠️ Push notifications are DISABLED")
+        st.markdown("""
+        To enable iPhone notifications:
+        1. Download Pushover app ($4.99 one-time)
+        2. Get your User Key from the app
+        3. Create an app at pushover.net to get App Token
+        4. Add to Streamlit secrets:
+           - PUSHOVER_USER_KEY
+           - PUSHOVER_APP_TOKEN
+        """)
+
+    st.markdown("---")
+
+    st.markdown("**Configuration:**")
     if not ALPACA_API_KEY:
         st.warning("⚠️ No API keys detected - running in simulation mode")
         st.info("To use real paper trading, set ALPACA_API_KEY and ALPACA_SECRET_KEY in Streamlit Cloud secrets")
