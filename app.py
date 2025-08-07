@@ -222,20 +222,42 @@ class AlpacaMarketData:
     def __init__(self, api):
         self.api = api
         self.stock_universe = self._get_stock_universe()
+        self.available_stocks = set()  # Track which stocks actually work
+        self.unavailable_stocks = set()  # Track which stocks don't work
         self.rate_limiter = {'last_request': 0, 'requests_count': 0}
         self.cache = {}  # Simple caching for repeated requests
         
     def _get_stock_universe(self):
-        """Return list of liquid, tradeable stocks"""
-        # Popular, liquid stocks suitable for day trading
+        """Return list of stocks available with Alpaca's basic data feed"""
+        # Focus on tech stocks and ETFs that are typically available with basic paper trading
+        # These are usually included in Alpaca's free data feed
         return [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'NFLX', 'CRM',
-            'ADBE', 'ORCL', 'AVGO', 'INTC', 'CSCO', 'PEP', 'KO', 'ABBV', 'TMO', 'ACN',
-            'TXN', 'DHR', 'VZ', 'QCOM', 'UNH', 'HD', 'MCD', 'NKE', 'DIS', 'V',
-            'JPM', 'JNJ', 'WMT', 'PG', 'UNP', 'MA', 'BAC', 'LLY', 'XOM', 'CVX',
-            'ASML', 'AZN', 'TSM', 'NVO', 'WFC', 'COST', 'AVGO', 'BRK.B', 'JNJ', 'TMUS',
-            'LIN', 'PFE', 'ABBV', 'MRK', 'KO', 'PEP', 'TMO', 'ABT', 'DHR', 'ACN'
+            # Major Tech (usually available)
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'NFLX',
+            'ADBE', 'ORCL', 'INTC', 'CSCO', 'CRM', 'AVGO',
+            
+            # Major ETFs (usually free)
+            'SPY', 'QQQ', 'IWM', 'EEM', 'GLD', 'SLV', 'USO', 'TLT', 'HYG', 'LQD',
+            'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLU', 'XLB', 'XLRE', 'XLP', 'XLY',
+            
+            # Additional tech/growth stocks often available
+            'PYPL', 'SHOP', 'SQ', 'ROKU', 'ZOOM', 'DOCU', 'TWLO', 'OKTA', 'CRWD', 'ZM',
+            
+            # Crypto-related (often available)
+            'COIN', 'RIOT', 'MARA', 'MSTR'
         ]
+    
+    def get_available_universe(self):
+        """Get list of stocks that actually work with the current subscription"""
+        if not self.available_stocks and not self.unavailable_stocks:
+            # First time - return a smaller subset to test
+            return self.stock_universe[:10]  # Test first 10 stocks
+        
+        # Return stocks we know work, or remaining untested stocks
+        available = list(self.available_stocks)
+        untested = [s for s in self.stock_universe if s not in self.available_stocks and s not in self.unavailable_stocks]
+        
+        return available + untested[:5]  # Add up to 5 untested stocks per batch
     
     def _rate_limit(self):
         """Simple rate limiting for Alpaca API calls"""
@@ -260,6 +282,10 @@ class AlpacaMarketData:
             
             # Fetch data for each symbol individually (Alpaca API requirement)
             for symbol in symbols:
+                # Skip symbols we know don't work
+                if symbol in self.unavailable_stocks:
+                    continue
+                
                 try:
                     self._rate_limit()
                     
@@ -301,9 +327,19 @@ class AlpacaMarketData:
                                 'volume': df['volume'].values,
                                 'timestamp': df.index.values if hasattr(df, 'index') else df['timestamp'].values
                             }
+                            # Track that this symbol works
+                            self.available_stocks.add(symbol)
                     
                 except Exception as symbol_error:
-                    logger.warning(f"Error fetching data for {symbol}: {symbol_error}")
+                    error_msg = str(symbol_error)
+                    if "subscription does not permit" in error_msg or "SIP data" in error_msg:
+                        # Mark this symbol as unavailable for future requests
+                        self.unavailable_stocks.add(symbol)
+                        if symbol in self.available_stocks:
+                            self.available_stocks.remove(symbol)
+                        logger.debug(f"Skipping {symbol}: Premium data required (not available with free paper trading)")
+                    else:
+                        logger.warning(f"Error fetching data for {symbol}: {symbol_error}")
                     continue
             
             return market_data
@@ -408,10 +444,13 @@ class AlpacaMarketData:
         candidates = []
         
         try:
-            # Get recent data for stock universe (in batches to respect API limits)
-            batch_size = 20
-            for i in range(0, len(self.stock_universe), batch_size):
-                batch = self.stock_universe[i:i+batch_size]
+            # Get available stocks only to avoid subscription errors
+            available_universe = self.get_available_universe()
+            
+            # Get recent data for available stocks (in smaller batches)
+            batch_size = 10  # Reduced batch size
+            for i in range(0, len(available_universe), batch_size):
+                batch = available_universe[i:i+batch_size]
                 market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
                 
                 for symbol, data in market_data.items():
@@ -451,9 +490,12 @@ class AlpacaMarketData:
         candidates = []
         
         try:
-            batch_size = 20
-            for i in range(0, len(self.stock_universe), batch_size):
-                batch = self.stock_universe[i:i+batch_size]
+            # Get available stocks only to avoid subscription errors
+            available_universe = self.get_available_universe()
+            
+            batch_size = 10  # Reduced batch size
+            for i in range(0, len(available_universe), batch_size):
+                batch = available_universe[i:i+batch_size]
                 market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
                 
                 for symbol, data in market_data.items():
@@ -491,9 +533,12 @@ class AlpacaMarketData:
         candidates = []
         
         try:
-            batch_size = 20
-            for i in range(0, len(self.stock_universe), batch_size):
-                batch = self.stock_universe[i:i+batch_size]
+            # Get available stocks only to avoid subscription errors
+            available_universe = self.get_available_universe()
+            
+            batch_size = 10  # Reduced batch size
+            for i in range(0, len(available_universe), batch_size):
+                batch = available_universe[i:i+batch_size]
                 market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
                 
                 for symbol, data in market_data.items():
@@ -1402,6 +1447,13 @@ if __name__ == "__main__":
         if st.button("🔍 Scan for New Candidates"):
             refresh_candidates()
             st.success("✅ Candidates refreshed!")
+            
+            # Show data availability status
+            if not bot.is_simulation and bot.market_data:
+                available = len(bot.market_data.available_stocks)
+                unavailable = len(bot.market_data.unavailable_stocks)
+                if available > 0 or unavailable > 0:
+                    st.info(f"📊 Data Status: {available} stocks available, {unavailable} require premium subscription")
 
         # Auto-refresh logic
         if time.time() - st.session_state['last_candidate_refresh'] > CANDIDATE_REFRESH_INTERVAL:
