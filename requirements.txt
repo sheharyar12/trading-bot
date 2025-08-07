@@ -1,6 +1,8 @@
 streamlit
 pandas
+numpy
 alpaca-trade-api
 yfinance
 pytz
 requests
+TA-Lib
