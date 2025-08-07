@@ -177,6 +177,58 @@ class EnhancedTradingBot:
         else:
             self._initialize_live_data()
 
+    def update_position_prices(self):
+        # Only in simulation: randomly adjust current price up/down by up to 1.5%
+        for symbol, pos in self.positions.items():
+            if pos['status'] == 'OPEN':
+                change_pct = random.uniform(-0.015, 0.015)
+                pos['current_price'] = round(pos['current_price'] * (1 + change_pct), 2)
+
+    def check_end_of_day(self):
+        now = datetime.now(MARKET_TIMEZONE)
+        if now.hour > MARKET_CLOSE_TIME[0] or (now.hour == MARKET_CLOSE_TIME[0] and now.minute >= MARKET_CLOSE_TIME[1]):
+            for symbol, pos in list(self.positions.items()):
+                if pos['status'] == 'OPEN':
+                    self.close_position(symbol, pos['current_price'], 'SELL (END_OF_DAY)')
+
+    def check_and_sell_positions(self):
+        for symbol, pos in list(self.positions.items()):
+            # Simulate current price update (in real, update from live data)
+            current_price = pos['current_price']  # replace with latest price source!
+            stop_loss = pos['stop_loss']
+            take_profit = pos['take_profit']
+
+            # Example: Sell logic
+            if pos['status'] == 'OPEN':
+                if current_price <= stop_loss:
+                    self.close_position(symbol, current_price, 'SELL (STOP_LOSS)')
+                elif current_price >= take_profit:
+                    self.close_position(symbol, current_price, 'SELL (TAKE_PROFIT)')
+                # Optional: end of day logic, etc.
+
+    def close_position(self, symbol, exit_price, action):
+        pos = self.positions[symbol]
+        pos['status'] = 'CLOSED'
+        pnl = (exit_price - pos['entry_price']) * pos['shares']
+        pnl_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * 100
+        pos['pnl'] = pnl
+        pos['pnl_pct'] = pnl_pct
+        # Add to trades log
+        self.trades_log.append({
+            'date': datetime.now().date(),
+            'time': datetime.now().strftime("%H:%M:%S"),
+            'action': action,
+            'symbol': symbol,
+            'price': exit_price,
+            'shares': pos['shares'],
+            'pnl': pnl,
+            'balance': self.account_balance + pnl,
+            'strategy': pos['strategy']
+        })
+        # Remove or update position as needed
+        del self.positions[symbol]
+
+
     def _initialize_sample_data(self):
         # ... use your sample data initialization as before ...
         # Paste your original _initialize_sample_data() here (unchanged)
@@ -336,6 +388,39 @@ class EnhancedTradingBot:
             'daily_return_pct': daily_return * 100,
             'all_candidates': self.all_candidates
         }
+
+    def execute_trade(self, symbol, price, shares, strategy):
+        # Only buy if not already in positions and under max concurrent positions
+        if symbol in self.positions or len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+            return False  # Skip
+        # Add to positions
+        self.positions[symbol] = {
+            'symbol': symbol,
+            'entry_price': price,
+            'current_price': price,
+            'shares': shares,
+            'stop_loss': price * (1 - STOP_LOSS_PCT),
+            'take_profit': price * (1 + TAKE_PROFIT_PCT),
+            'entry_time': datetime.now(),
+            'status': 'OPEN',
+            'pnl': 0,
+            'pnl_pct': 0,
+            'strategy': strategy
+        }
+        # Add to trade log
+        self.trades_log.append({
+            'date': datetime.now().date(),
+            'time': datetime.now().strftime("%H:%M:%S"),
+            'action': 'BUY',
+            'symbol': symbol,
+            'price': price,
+            'shares': shares,
+            'pnl': 0,
+            'balance': self.account_balance,
+            'strategy': strategy
+        })
+        # In real code: Send order to Alpaca here if LIVE
+        return True
 
 # --- Caching the bot for Streamlit hot reloads ---
 @st.cache_resource
@@ -522,6 +607,22 @@ if __name__ == "__main__":
                 'breakout': bot.market_data.get_candidates_by_strategy('breakout')
             }
             st.session_state['last_candidate_refresh'] = time.time()
+
+            # --- 1. Update simulated prices for open positions ---
+            if bot.is_simulation:
+                bot.update_position_prices()
+
+            # --- 2. Auto-buy logic (for every candidate) ---
+            all_candidates = st.session_state['all_candidates']
+            for strategy_name, candidates in all_candidates.items():
+                for c in candidates:
+                    symbol = c['symbol']
+                    price = c['price']
+                    bot.execute_trade(symbol, price, POSITION_SIZE, strategy_name)
+
+            # --- 3. Sell logic for all open positions ---
+            bot.check_and_sell_positions()
+            bot.check_end_of_day()
 
         # Manual button
         if st.button("🔍 Scan for New Candidates"):
