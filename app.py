@@ -341,6 +341,7 @@ if __name__ == "__main__":
 
     # For example:
     stats = bot.get_stats()
+    st.write(stats)  # Debug: See what stats dict contains
 
     # ... Everything below this is unchanged from your main section ...
     # (All your metric, UI, tab logic, etc.)
