@@ -97,6 +97,30 @@ class SimulatedMarketData:
         self.volumes = {s: random.randint(1000000, 50000000) for s in self.stocks}
         self.opening_ranges = {}
 
+    def get_candidates_by_strategy(self, strategy):
+        """
+        Dummy candidate generator for testing purposes.
+        Replace this with real screening logic.
+        """
+        # You can customize these for real data/logic!
+        base = {
+            'momentum': [
+                {'symbol': 'AAPL', 'price': 185.0, 'change_pct': 0.06, 'volume': 5000000, 'avg_volume': 2400000,
+                 'indicators': {'macd': 0.4, 'adx': 29, 'vwap': 182.0}},
+                {'symbol': 'TSLA', 'price': 270.0, 'change_pct': 0.11, 'volume': 9000000, 'avg_volume': 3200000,
+                 'indicators': {'macd': 0.35, 'adx': 32, 'vwap': 265.0}}
+            ],
+            'mean_reversion': [
+                {'symbol': 'MSFT', 'price': 305.0, 'change_pct': -0.07, 'volume': 6000000, 'avg_volume': 2600000,
+                 'indicators': {'rsi_5': 22, 'bb_lower': 306.0, 'macd': -0.12}},
+            ],
+            'breakout': [
+                {'symbol': 'NVDA', 'price': 830.0, 'change_pct': 0.08, 'volume': 7000000, 'avg_volume': 2800000,
+                 'opening_range': {'high': 820.0}, 'indicators': {'adx': 31, 'atr': 7.2}},
+            ]
+        }
+        return base.get(strategy, [])
+
     # ... (rest of class unchanged) ...
 
 class EnhancedTradingBot:
