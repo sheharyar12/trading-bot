@@ -262,7 +262,7 @@ class EnhancedTradingBot:
                         'stop_loss': None,
                         'take_profit': None,
                         'entry_time': None,
-                        'status': pos.side.upper(),
+                        'status': 'OPEN',   # <-- set as 'OPEN' for all open positions
                         'pnl': float(pos.unrealized_pl),
                         'pnl_pct': float(pos.unrealized_plpc) * 100,
                         'strategy': 'unknown',
@@ -644,7 +644,7 @@ if __name__ == "__main__":
         if bot.positions:
             positions_data = []
             for symbol, pos in bot.positions.items():
-                if pos['status'] == 'OPEN':
+                if pos['status'] in ('OPEN', 'LONG', 'SHORT'):
                     strategy = pos.get('strategy', 'unknown')
                     strategy_emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
                     pnl_indicator = "🟢" if pos['pnl'] > 0 else "🔴" if pos['pnl'] < 0 else "⚪"
