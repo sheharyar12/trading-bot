@@ -508,17 +508,31 @@ if __name__ == "__main__":
     with tab2:
         st.subheader("🎯 Multi-Strategy Candidates")
 
-        # --- BEGIN: Manual Scan Button logic ---
+        CANDIDATE_REFRESH_INTERVAL = 20  # seconds
+
+        if 'last_candidate_refresh' not in st.session_state:
+            st.session_state['last_candidate_refresh'] = 0
         if 'all_candidates' not in st.session_state:
             st.session_state['all_candidates'] = bot.all_candidates
 
-        if st.button("🔍 Scan for New Candidates"):
+        def refresh_candidates():
             st.session_state['all_candidates'] = {
                 'momentum': bot.market_data.get_candidates_by_strategy('momentum'),
                 'mean_reversion': bot.market_data.get_candidates_by_strategy('mean_reversion') if ENABLE_MEAN_REVERSION else [],
                 'breakout': bot.market_data.get_candidates_by_strategy('breakout')
             }
+            st.session_state['last_candidate_refresh'] = time.time()
+
+        # Manual button
+        if st.button("🔍 Scan for New Candidates"):
+            refresh_candidates()
             st.success("✅ Candidates refreshed!")
+
+        # Auto-refresh logic
+        if time.time() - st.session_state['last_candidate_refresh'] > CANDIDATE_REFRESH_INTERVAL:
+            refresh_candidates()
+
+        st.caption("🔄 Candidates auto-refresh every 20 seconds (plus manual refresh available)")
 
         all_candidates = st.session_state['all_candidates']
 
