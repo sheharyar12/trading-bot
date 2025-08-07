@@ -657,9 +657,9 @@ if __name__ == "__main__":
                         'Shares': f"{pos['shares']:,}",
                         'P&L': f"{pnl_indicator} ${pos['pnl']:+.2f}",
                         'P&L %': f"{pos['pnl_pct']:+.2f}%",
-                        'Stop Loss': f"${pos['stop_loss']:.2f}",
-                        'Take Profit': f"${pos['take_profit']:.2f}",
-                        'Entry Time': pos['entry_time'].strftime('%H:%M')
+                        'Stop Loss': f"${pos['stop_loss']:.2f}" if pos['stop_loss'] is not None else "-",
+                        'Take Profit': f"${pos['take_profit']:.2f}" if pos['take_profit'] is not None else "-",
+                        'Entry Time': pos['entry_time'].strftime('%H:%M') if pos['entry_time'] is not None else "-",
                     })
 
             if positions_data:
