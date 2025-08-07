@@ -645,6 +645,9 @@ class EnhancedTradingBot:
         else:
             self._initialize_live_data()
             self.is_trading_hours = self.is_market_open()
+            
+        # Set daily starting balance (should be done at start of each trading day)
+        self.daily_starting_balance = self.account_balance
 
     def is_market_open(self):
         """Check if market is currently open using Alpaca calendar"""
@@ -837,6 +840,155 @@ class EnhancedTradingBot:
             'total_return_pct': ((current_equity - self.initial_balance) / self.initial_balance * 100) if self.initial_balance > 0 else 0,
             'current_equity': current_equity
         }
+
+    def update_daily_pnl(self):
+        """Update real-time daily P&L calculation"""
+        try:
+            if not self.is_simulation:
+                # Live mode: get real performance data
+                performance = self.calculate_daily_performance()
+                self.daily_pnl = performance.get('daily_pnl', 0)
+                self.account_balance = performance.get('current_equity', self.account_balance)
+            else:
+                # Simulation mode: calculate from positions and trades
+                unrealized_pnl = sum(pos['pnl'] for pos in self.positions.values() if pos['status'] == 'OPEN')
+                today_trades = [t for t in self.trades_log if t['date'] == datetime.now().date()]
+                realized_pnl = sum(t.get('pnl', 0) for t in today_trades)
+                self.daily_pnl = unrealized_pnl + realized_pnl
+                
+        except Exception as e:
+            logger.error(f"Error updating daily P&L: {e}")
+
+    def check_daily_targets(self):
+        """Check profit target (4%) and loss limit (-2%), close all positions if hit"""
+        try:
+            # Update P&L first
+            self.update_daily_pnl()
+            
+            # Calculate daily return percentage
+            if self.daily_starting_balance > 0:
+                daily_return_pct = (self.daily_pnl / self.daily_starting_balance)
+            else:
+                daily_return_pct = 0
+            
+            # Check profit target (4%)
+            if not self.daily_target_hit and daily_return_pct >= DAILY_PROFIT_TARGET_PCT:
+                logger.info(f"🎯 DAILY PROFIT TARGET HIT! Return: {daily_return_pct*100:.2f}% (Target: {DAILY_PROFIT_TARGET_PCT*100:.1f}%)")
+                self.daily_target_hit = True
+                self.close_all_positions_for_target()
+                return True
+            
+            # Check loss limit (-2%) 
+            if not self.daily_loss_limit_hit and daily_return_pct <= -MAX_DAILY_LOSS_PCT:
+                logger.warning(f"🛑 DAILY LOSS LIMIT HIT! Loss: {daily_return_pct*100:.2f}% (Limit: -{MAX_DAILY_LOSS_PCT*100:.1f}%)")
+                self.daily_loss_limit_hit = True
+                self.close_all_positions_for_loss_limit()
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking daily targets: {e}")
+            return False
+
+    def close_all_positions_for_target(self):
+        """Immediately close all positions when daily target achieved"""
+        try:
+            positions_closed = 0
+            for symbol, pos in list(self.positions.items()):
+                if pos['status'] == 'OPEN':
+                    self.close_position(symbol, pos['current_price'], 'SELL (TARGET_HIT)')
+                    positions_closed += 1
+            
+            if positions_closed > 0:
+                logger.info(f"✅ Closed {positions_closed} positions due to daily profit target achievement")
+            
+        except Exception as e:
+            logger.error(f"Error closing positions for target: {e}")
+
+    def close_all_positions_for_loss_limit(self):
+        """Immediately close all positions when daily loss limit hit"""
+        try:
+            positions_closed = 0
+            for symbol, pos in list(self.positions.items()):
+                if pos['status'] == 'OPEN':
+                    self.close_position(symbol, pos['current_price'], 'SELL (LOSS_LIMIT)')
+                    positions_closed += 1
+            
+            if positions_closed > 0:
+                logger.warning(f"🛑 Closed {positions_closed} positions due to daily loss limit")
+                
+            # Set pause until end of day
+            market_close = datetime.now(MARKET_TIMEZONE).replace(
+                hour=MARKET_CLOSE_TIME[0], 
+                minute=MARKET_CLOSE_TIME[1], 
+                second=0, 
+                microsecond=0
+            )
+            self.pause_trading_until = market_close
+            
+        except Exception as e:
+            logger.error(f"Error closing positions for loss limit: {e}")
+
+    def check_end_of_day_closure(self):
+        """Close positions at 3:45 PM, backup at market close"""
+        try:
+            now = datetime.now(MARKET_TIMEZONE)
+            
+            # 3:45 PM closure (15 minutes before market close)
+            close_345_time = (15, 45)  # 3:45 PM
+            if (now.hour > close_345_time[0] or 
+                (now.hour == close_345_time[0] and now.minute >= close_345_time[1])) and \
+               (now.hour < MARKET_CLOSE_TIME[0] or 
+                (now.hour == MARKET_CLOSE_TIME[0] and now.minute < MARKET_CLOSE_TIME[1])):
+                
+                # Close all positions at 3:45 PM
+                positions_to_close = [symbol for symbol, pos in self.positions.items() 
+                                    if pos['status'] == 'OPEN']
+                
+                if positions_to_close:
+                    logger.info(f"⏰ 3:45 PM CLOSURE: Closing {len(positions_to_close)} positions")
+                    for symbol in positions_to_close:
+                        pos = self.positions[symbol]
+                        self.close_position(symbol, pos['current_price'], 'SELL (3:45_PM_CLOSE)')
+                    
+        except Exception as e:
+            logger.error(f"Error in end-of-day closure: {e}")
+
+    def should_allow_new_trades(self):
+        """Return (bool, reason) - whether new trades are allowed"""
+        try:
+            # Check if daily target already hit
+            if self.daily_target_hit:
+                return False, "Daily profit target achieved - no more trades today"
+            
+            # Check if daily loss limit hit
+            if self.daily_loss_limit_hit:
+                return False, "Daily loss limit reached - trading halted"
+            
+            # Check if trading is paused
+            if self.pause_trading_until and datetime.now() < self.pause_trading_until:
+                return False, "Trading paused due to circuit breaker"
+            
+            # Check market hours
+            if not self.is_trading_hours:
+                return False, "Market is closed"
+            
+            # Check time-based restrictions (no new trades after 3:00 PM)
+            now = datetime.now(MARKET_TIMEZONE)
+            if now.hour >= NO_TRADES_AFTER_HOUR:
+                return False, f"No new trades after {NO_TRADES_AFTER_HOUR}:00 PM ET"
+            
+            # Check max positions
+            open_positions = sum(1 for pos in self.positions.values() if pos['status'] == 'OPEN')
+            if open_positions >= MAX_CONCURRENT_POSITIONS:
+                return False, f"Maximum positions reached ({MAX_CONCURRENT_POSITIONS})"
+            
+            return True, "Trading allowed"
+            
+        except Exception as e:
+            logger.error(f"Error checking trade allowance: {e}")
+            return False, "Error checking trade conditions"
 
     def check_end_of_day(self):
         now = datetime.now(MARKET_TIMEZONE)
@@ -1140,10 +1292,16 @@ class EnhancedTradingBot:
         }
 
     def execute_trade(self, symbol, price, shares, strategy):
-        # --- RISK RULES ---
-        if symbol in self.positions or len(self.positions) >= MAX_CONCURRENT_POSITIONS:
+        # --- ENHANCED RISK MANAGEMENT ---
+        # Check if new trades are allowed (includes all risk checks)
+        allowed, reason = self.should_allow_new_trades()
+        if not allowed:
+            logger.info(f"Trade blocked for {symbol}: {reason}")
             return False
-        if not self.is_trading_hours or self.pause_trading_until and datetime.now() < self.pause_trading_until:
+        
+        # Check if symbol already in positions
+        if symbol in self.positions:
+            logger.info(f"Trade blocked for {symbol}: Position already exists")
             return False
 
         # Use bracket orders when possible (paper trading mode)
@@ -1242,6 +1400,14 @@ if __name__ == "__main__":
     st.title("🚀 Enhanced Multi-Strategy Paper Trading Bot")
     st.caption("Professional-grade bot with Alpaca Paper Trading integration")
 
+    # Risk Management Alerts (prominent at top)
+    if stats['daily_target_hit']:
+        st.success("🎯 **DAILY PROFIT TARGET ACHIEVED!** All trading stopped for today. Congratulations!")
+    elif stats['daily_loss_limit_hit']:
+        st.error("🛑 **DAILY LOSS LIMIT REACHED!** All positions closed. Trading halted for risk protection.")
+    elif stats['trading_paused']:
+        st.warning("⏸️ **TRADING PAUSED** Circuit breaker active due to risk management.")
+    
     # Logging & status info
     if bot.is_simulation:
         st.warning("🔒 Running in simulation mode. No real trades or balances.")
@@ -1308,9 +1474,20 @@ if __name__ == "__main__":
                   delta=f"{stats['daily_return_pct']:+.2f}%" if stats['daily_pnl'] != 0 else None)
 
     with col2:
-        progress_color = "normal" if stats['target_progress'] < 100 else "inverse"
-        st.metric("Daily Target Progress", f"{stats['target_progress']:.0f}%",
-                  delta=f"Goal: {DAILY_PROFIT_TARGET_PCT*100:.0f}%")
+        # Enhanced target progress with risk indicators
+        target_progress = stats['target_progress']
+        if stats['daily_target_hit']:
+            st.metric("🎯 Target Progress", "ACHIEVED! 🎉", 
+                     delta=f"Target: {DAILY_PROFIT_TARGET_PCT*100:.0f}% REACHED")
+        elif stats['daily_loss_limit_hit']:
+            st.metric("🛑 Daily Risk", "LOSS LIMIT HIT", 
+                     delta=f"Limit: -{MAX_DAILY_LOSS_PCT*100:.0f}% BREACHED")
+        else:
+            # Show normal progress
+            progress_color = "normal" if target_progress < 100 else "inverse"
+            progress_emoji = "🎯" if target_progress >= 75 else "📊"
+            st.metric(f"{progress_emoji} Target Progress", f"{target_progress:.0f}%",
+                      delta=f"Goal: {DAILY_PROFIT_TARGET_PCT*100:.0f}%")
 
     with col3:
         st.metric("Total P&L", f"${stats['total_pnl']:+.2f}")
@@ -1325,8 +1502,8 @@ if __name__ == "__main__":
         win_color = "normal" if stats['win_rate'] >= 50 else "inverse"
         st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
 
-    # System Status
-    st.markdown("### 🎛️ **System Status**")
+    # System Status & Risk Management
+    st.markdown("### 🎛️ **System Status & Risk Management**")
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -1334,14 +1511,27 @@ if __name__ == "__main__":
         st.metric("Market Regime", f"{regime_emoji} {stats['market_regime'].title()}")
 
     with col2:
-        if stats['trading_paused']:
-            st.metric("Status", "⏸️ Paused", delta="Circuit Breaker Active")
-        elif stats['daily_target_hit']:
-            st.metric("Status", "🎯 Target Hit", delta="Daily goal achieved")
+        # Enhanced status display with better visual indicators
+        if stats['daily_target_hit']:
+            st.metric("Status", "🎯 TARGET ACHIEVED", delta="NO MORE TRADES TODAY")
+            st.success("Daily profit target reached - trading stopped for today!")
         elif stats['daily_loss_limit_hit']:
-            st.metric("Status", "🛑 Loss Limit", delta="Daily limit hit")
+            st.metric("Status", "🛑 LOSS LIMIT HIT", delta="TRADING HALTED")
+            st.error("Daily loss limit reached - all positions closed!")
+        elif stats['trading_paused']:
+            st.metric("Status", "⏸️ Paused", delta="Circuit Breaker Active")
+            st.warning("Trading paused due to risk management")
         else:
-            st.metric("Status", "✅ Active", delta="All systems operational")
+            # Check current time for post-3:45 PM status
+            now = datetime.now(MARKET_TIMEZONE)
+            if now.hour > 15 or (now.hour == 15 and now.minute >= 45):
+                st.metric("Status", "⏰ POST 3:45 PM", delta="POSITIONS CLOSED")
+                st.info("Past 3:45 PM - no new trades, positions should be closed")
+            elif now.hour >= NO_TRADES_AFTER_HOUR:
+                st.metric("Status", "⏰ NO NEW TRADES", delta=f"After {NO_TRADES_AFTER_HOUR}:00 PM")
+                st.info("No new trades after 3:00 PM - position management only")
+            else:
+                st.metric("Status", "✅ Active", delta="All systems operational")
 
     with col3:
         loss_color = "inverse" if stats['consecutive_losses'] >= 2 else "normal"
@@ -1412,6 +1602,31 @@ if __name__ == "__main__":
             st.session_state['all_candidates'] = bot.all_candidates
 
         def refresh_candidates():
+            # --- 1. CRITICAL RISK MANAGEMENT CHECKS FIRST ---
+            # Check daily targets (profit/loss limits) - stops all trading if hit
+            if bot.check_daily_targets():
+                logger.info("Daily target or loss limit hit - stopping all trading activity")
+                return  # Stop immediately if target/limit hit
+            
+            # Check end-of-day closure (3:45 PM)
+            bot.check_end_of_day_closure()
+            
+            # Check if new trades are allowed
+            allowed, reason = bot.should_allow_new_trades()
+            if not allowed:
+                logger.info(f"New trades blocked: {reason}")
+                # Still update positions and close existing ones, but no new trades
+                if not bot.is_simulation:
+                    bot.monitor_orders()
+                    bot.update_position_prices_live()
+                else:
+                    bot.update_position_prices()
+                
+                bot.check_and_sell_positions()
+                bot.check_end_of_day()
+                return
+            
+            # --- 2. Update session state with fresh candidates ---
             st.session_state['all_candidates'] = {
                 'momentum': bot.get_real_market_candidates('momentum'),
                 'mean_reversion': bot.get_real_market_candidates('mean_reversion') if ENABLE_MEAN_REVERSION else [],
@@ -1419,29 +1634,28 @@ if __name__ == "__main__":
             }
             st.session_state['last_candidate_refresh'] = time.time()
 
-            # --- 1. Monitor orders and update positions ---
+            # --- 3. Monitor orders and update positions ---
             if not bot.is_simulation:
                 bot.monitor_orders()
                 bot.update_position_prices_live()
             else:
                 bot.update_position_prices()
 
-            # --- 2. Auto-buy logic (for every candidate) ---
+            # --- 4. Auto-buy logic (only if trades are allowed) ---
             all_candidates = st.session_state['all_candidates']
             for strategy_name, candidates in all_candidates.items():
                 for c in candidates:
                     symbol = c['symbol']
                     price = c['price']
+                    # execute_trade now has built-in risk checks
                     bot.execute_trade(symbol, price, POSITION_SIZE, strategy_name)
 
-            # --- 3. Sell logic for all open positions ---
+            # --- 5. Sell logic for all open positions ---
             bot.check_and_sell_positions()
             bot.check_end_of_day()
             
-            # --- 4. Update performance metrics ---
-            if not bot.is_simulation:
-                performance = bot.calculate_daily_performance()
-                bot.daily_pnl = performance.get('daily_pnl', bot.daily_pnl)
+            # --- 6. Update performance metrics ---
+            bot.update_daily_pnl()
 
         # Manual button
         if st.button("🔍 Scan for New Candidates"):
