@@ -263,15 +263,19 @@ class AlpacaMarketData:
                 try:
                     self._rate_limit()
                     
-                    end_time = datetime.now(pytz.UTC)
-                    start_time = end_time - timedelta(days=2)  # Get 2 days of data
+                    end_time = datetime.now(pytz.UTC).replace(microsecond=0)
+                    start_time = (end_time - timedelta(days=2)).replace(microsecond=0)
+                    
+                    # Format times as ISO strings without microseconds for Alpaca API
+                    start_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    end_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                     
                     # Use correct parameter name 'symbol' (singular)
                     bars = self.api.get_bars(
                         symbol=symbol,
                         timeframe=timeframe,
-                        start=start_time,
-                        end=end_time,
+                        start=start_str,
+                        end=end_str,
                         limit=limit
                     )
                     
@@ -323,9 +327,17 @@ class AlpacaMarketData:
             
             # Fallback: get latest bar data
             try:
+                end_time = datetime.now(pytz.UTC).replace(microsecond=0)
+                start_time = (end_time - timedelta(hours=1)).replace(microsecond=0)
+                
+                start_str = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                end_str = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                
                 bars = self.api.get_bars(
                     symbol=symbol,
                     timeframe='1Min',
+                    start=start_str,
+                    end=end_str,
                     limit=1
                 )
                 if bars and len(bars) > 0:
