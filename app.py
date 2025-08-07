@@ -71,57 +71,427 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TechnicalIndicators:
-    # ... All your indicator methods as before (unchanged) ...
-    # [NO CHANGES from your original file, so omitted here for brevity]
-    # Paste your entire TechnicalIndicators class here
-
+    """Complete technical indicators implementation for trading analysis"""
+    
     @staticmethod
     def _ema(prices: np.ndarray, period: int) -> np.ndarray:
+        """Exponential Moving Average calculation"""
         alpha = 2.0 / (period + 1)
         ema = np.zeros_like(prices)
         ema[0] = prices[0]
         for i in range(1, len(prices)):
             ema[i] = alpha * prices[i] + (1 - alpha) * ema[i-1]
         return ema
+    
+    @staticmethod
+    def _sma(prices: np.ndarray, period: int) -> np.ndarray:
+        """Simple Moving Average calculation"""
+        sma = np.zeros_like(prices)
+        sma[:period-1] = np.nan
+        for i in range(period-1, len(prices)):
+            sma[i] = np.mean(prices[i-period+1:i+1])
+        return sma
+    
+    @staticmethod
+    def calculate_rsi(prices: np.ndarray, period: int = 14) -> np.ndarray:
+        """Relative Strength Index calculation"""
+        if len(prices) < period + 1:
+            return np.full_like(prices, 50.0)
+        
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        
+        avg_gains = np.zeros_like(prices)
+        avg_losses = np.zeros_like(prices)
+        
+        # Initial averages
+        avg_gains[period] = np.mean(gains[:period])
+        avg_losses[period] = np.mean(losses[:period])
+        
+        # Calculate subsequent averages using EMA formula
+        for i in range(period + 1, len(prices)):
+            avg_gains[i] = (avg_gains[i-1] * (period - 1) + gains[i-1]) / period
+            avg_losses[i] = (avg_losses[i-1] * (period - 1) + losses[i-1]) / period
+        
+        rs = np.divide(avg_gains, avg_losses, out=np.zeros_like(avg_gains), where=avg_losses!=0)
+        rsi = 100 - (100 / (1 + rs))
+        rsi[:period] = 50.0  # Default RSI for initial values
+        return rsi
+    
+    @staticmethod
+    def calculate_macd(prices: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9):
+        """MACD with signal line and histogram"""
+        if len(prices) < slow:
+            return np.zeros_like(prices), np.zeros_like(prices), np.zeros_like(prices)
+        
+        ema_fast = TechnicalIndicators._ema(prices, fast)
+        ema_slow = TechnicalIndicators._ema(prices, slow)
+        macd_line = ema_fast - ema_slow
+        signal_line = TechnicalIndicators._ema(macd_line, signal)
+        histogram = macd_line - signal_line
+        
+        return macd_line, signal_line, histogram
+    
+    @staticmethod
+    def calculate_bollinger_bands(prices: np.ndarray, period: int = 20, std_dev: float = 2):
+        """Bollinger Bands: upper, middle, lower"""
+        if len(prices) < period:
+            return prices, prices, prices
+        
+        middle_band = TechnicalIndicators._sma(prices, period)
+        
+        std_values = np.zeros_like(prices)
+        std_values[:period-1] = np.nan
+        
+        for i in range(period-1, len(prices)):
+            std_values[i] = np.std(prices[i-period+1:i+1])
+        
+        upper_band = middle_band + (std_dev * std_values)
+        lower_band = middle_band - (std_dev * std_values)
+        
+        return upper_band, middle_band, lower_band
+    
+    @staticmethod
+    def calculate_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14):
+        """Average Directional Index for trend strength"""
+        if len(high) < period + 1:
+            return np.full_like(close, 25.0)
+        
+        # Calculate True Range
+        tr1 = high - low
+        tr2 = np.abs(high - np.roll(close, 1))
+        tr3 = np.abs(low - np.roll(close, 1))
+        tr = np.maximum(tr1, np.maximum(tr2, tr3))
+        tr[0] = tr1[0]  # Handle first value
+        
+        # Calculate Directional Movement
+        dm_plus = np.where((high - np.roll(high, 1)) > (np.roll(low, 1) - low), 
+                          np.maximum(high - np.roll(high, 1), 0), 0)
+        dm_minus = np.where((np.roll(low, 1) - low) > (high - np.roll(high, 1)), 
+                           np.maximum(np.roll(low, 1) - low, 0), 0)
+        
+        dm_plus[0] = 0
+        dm_minus[0] = 0
+        
+        # Smooth TR and DM values
+        atr = TechnicalIndicators._ema(tr, period)
+        dm_plus_smooth = TechnicalIndicators._ema(dm_plus, period)
+        dm_minus_smooth = TechnicalIndicators._ema(dm_minus, period)
+        
+        # Calculate DI+ and DI-
+        di_plus = 100 * dm_plus_smooth / atr
+        di_minus = 100 * dm_minus_smooth / atr
+        
+        # Calculate DX and ADX
+        dx = 100 * np.abs(di_plus - di_minus) / (di_plus + di_minus + 1e-10)
+        adx = TechnicalIndicators._ema(dx, period)
+        
+        return adx
+    
+    @staticmethod
+    def calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14):
+        """Average True Range"""
+        if len(high) < 2:
+            return high - low
+        
+        tr1 = high - low
+        tr2 = np.abs(high - np.roll(close, 1))
+        tr3 = np.abs(low - np.roll(close, 1))
+        tr = np.maximum(tr1, np.maximum(tr2, tr3))
+        tr[0] = tr1[0]  # Handle first value
+        
+        atr = TechnicalIndicators._ema(tr, period)
+        return atr
+    
+    @staticmethod
+    def calculate_vwap(high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray):
+        """Volume Weighted Average Price"""
+        typical_price = (high + low + close) / 3
+        pv = typical_price * volume
+        cumulative_pv = np.cumsum(pv)
+        cumulative_volume = np.cumsum(volume)
+        
+        vwap = np.divide(cumulative_pv, cumulative_volume, 
+                        out=np.zeros_like(cumulative_pv), where=cumulative_volume!=0)
+        return vwap
 
-    # ... (copy all the indicator methods here) ...
-    # Rest of TechnicalIndicators unchanged!
-
-class SimulatedMarketData:
-    # ... No change, use your original class as is ...
-    # Paste your SimulatedMarketData here
-
-    def __init__(self):
-        self.stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'NFLX', 'CRM']
-        self.base_prices = {s: random.uniform(50, 500) for s in self.stocks}
-        self.volumes = {s: random.randint(1000000, 50000000) for s in self.stocks}
-        self.opening_ranges = {}
-
+class AlpacaMarketData:
+    """Real market data fetching and analysis using Alpaca API"""
+    
+    def __init__(self, api):
+        self.api = api
+        self.stock_universe = self._get_stock_universe()
+        self.rate_limiter = {'last_request': 0, 'requests_count': 0}
+        self.cache = {}  # Simple caching for repeated requests
+        
+    def _get_stock_universe(self):
+        """Return list of liquid, tradeable stocks"""
+        # Popular, liquid stocks suitable for day trading
+        return [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'AMD', 'NFLX', 'CRM',
+            'ADBE', 'ORCL', 'AVGO', 'INTC', 'CSCO', 'PEP', 'KO', 'ABBV', 'TMO', 'ACN',
+            'TXN', 'DHR', 'VZ', 'QCOM', 'UNH', 'HD', 'MCD', 'NKE', 'DIS', 'V',
+            'JPM', 'JNJ', 'WMT', 'PG', 'UNP', 'MA', 'BAC', 'LLY', 'XOM', 'CVX',
+            'ASML', 'AZN', 'TSM', 'NVO', 'WFC', 'COST', 'AVGO', 'BRK.B', 'JNJ', 'TMUS',
+            'LIN', 'PFE', 'ABBV', 'MRK', 'KO', 'PEP', 'TMO', 'ABT', 'DHR', 'ACN'
+        ]
+    
+    def _rate_limit(self):
+        """Simple rate limiting for Alpaca API calls"""
+        import time
+        current_time = time.time()
+        if current_time - self.rate_limiter['last_request'] < 0.1:  # 100ms between requests
+            time.sleep(0.1)
+        self.rate_limiter['last_request'] = current_time
+        self.rate_limiter['requests_count'] += 1
+    
+    def fetch_market_data(self, symbols, timeframe='1Min', limit=100):
+        """Fetch real market data from Alpaca"""
+        if not self.api:
+            return {}
+        
+        try:
+            self._rate_limit()
+            
+            # Convert single symbol to list
+            if isinstance(symbols, str):
+                symbols = [symbols]
+            
+            # Limit symbols per request to avoid API limits
+            symbols = symbols[:50]  # Max 50 symbols per request
+            
+            end_time = datetime.now(pytz.UTC)
+            start_time = end_time - timedelta(days=5)  # Get 5 days of data
+            
+            bars = self.api.get_bars(
+                symbols=symbols,
+                timeframe=timeframe,
+                start=start_time,
+                end=end_time,
+                limit=limit
+            ).df
+            
+            if bars.empty:
+                logger.warning(f"No data received for symbols: {symbols}")
+                return {}
+            
+            # Process and structure the data
+            market_data = {}
+            for symbol in symbols:
+                if symbol in bars.index.get_level_values('symbol'):
+                    symbol_data = bars.xs(symbol, level='symbol')
+                    if not symbol_data.empty:
+                        market_data[symbol] = {
+                            'high': symbol_data['high'].values,
+                            'low': symbol_data['low'].values,
+                            'close': symbol_data['close'].values,
+                            'volume': symbol_data['volume'].values,
+                            'timestamp': symbol_data.index.values
+                        }
+            
+            return market_data
+            
+        except Exception as e:
+            logger.error(f"Error fetching market data: {e}")
+            return {}
+    
+    def get_current_price(self, symbol):
+        """Get current/latest price for a symbol"""
+        try:
+            self._rate_limit()
+            quotes = self.api.get_latest_quote(symbol)
+            if quotes:
+                return (quotes.bid_price + quotes.ask_price) / 2  # Mid price
+            return None
+        except Exception as e:
+            logger.error(f"Error getting current price for {symbol}: {e}")
+            return None
+    
+    def calculate_indicators(self, symbol_data):
+        """Calculate all technical indicators for given symbol data"""
+        if not symbol_data or len(symbol_data['close']) < 50:
+            return {}
+        
+        high = np.array(symbol_data['high'])
+        low = np.array(symbol_data['low'])
+        close = np.array(symbol_data['close'])
+        volume = np.array(symbol_data['volume'])
+        
+        indicators = {}
+        
+        try:
+            # RSI
+            indicators['rsi'] = TechnicalIndicators.calculate_rsi(close)[-1]
+            indicators['rsi_5'] = TechnicalIndicators.calculate_rsi(close, period=5)[-1]
+            
+            # MACD
+            macd, signal, histogram = TechnicalIndicators.calculate_macd(close)
+            indicators['macd'] = macd[-1]
+            indicators['macd_signal'] = signal[-1]
+            indicators['macd_histogram'] = histogram[-1]
+            
+            # Bollinger Bands
+            bb_upper, bb_middle, bb_lower = TechnicalIndicators.calculate_bollinger_bands(close)
+            indicators['bb_upper'] = bb_upper[-1]
+            indicators['bb_middle'] = bb_middle[-1]
+            indicators['bb_lower'] = bb_lower[-1]
+            
+            # ADX
+            indicators['adx'] = TechnicalIndicators.calculate_adx(high, low, close)[-1]
+            
+            # ATR
+            indicators['atr'] = TechnicalIndicators.calculate_atr(high, low, close)[-1]
+            
+            # VWAP
+            indicators['vwap'] = TechnicalIndicators.calculate_vwap(high, low, close, volume)[-1]
+            
+            # Price changes
+            indicators['price_change'] = (close[-1] - close[-2]) / close[-2] if len(close) > 1 else 0
+            indicators['volume_ratio'] = volume[-1] / np.mean(volume[-20:]) if len(volume) > 20 else 1
+            
+        except Exception as e:
+            logger.error(f"Error calculating indicators: {e}")
+            
+        return indicators
+    
+    def screen_momentum_candidates(self):
+        """Screen for momentum trading candidates"""
+        candidates = []
+        
+        try:
+            # Get recent data for stock universe (in batches to respect API limits)
+            batch_size = 20
+            for i in range(0, len(self.stock_universe), batch_size):
+                batch = self.stock_universe[i:i+batch_size]
+                market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
+                
+                for symbol, data in market_data.items():
+                    if len(data['close']) < 50:
+                        continue
+                    
+                    indicators = self.calculate_indicators(data)
+                    if not indicators:
+                        continue
+                    
+                    # Momentum criteria
+                    if (indicators.get('macd', 0) > 0 and 
+                        indicators.get('adx', 0) > 25 and
+                        data['close'][-1] > indicators.get('vwap', data['close'][-1]) and
+                        indicators.get('volume_ratio', 0) > VOLUME_MULTIPLIER and
+                        indicators.get('price_change', 0) > MIN_PRICE_CHANGE_PCT):
+                        
+                        candidates.append({
+                            'symbol': symbol,
+                            'price': float(data['close'][-1]),
+                            'change_pct': float(indicators['price_change']),
+                            'volume': int(data['volume'][-1]),
+                            'avg_volume': int(np.mean(data['volume'][-20:])),
+                            'indicators': indicators
+                        })
+                
+                # Short delay between batches
+                time.sleep(0.2)
+                    
+        except Exception as e:
+            logger.error(f"Error screening momentum candidates: {e}")
+        
+        return sorted(candidates, key=lambda x: x['change_pct'], reverse=True)[:10]
+    
+    def screen_mean_reversion_candidates(self):
+        """Screen for mean reversion trading candidates"""
+        candidates = []
+        
+        try:
+            batch_size = 20
+            for i in range(0, len(self.stock_universe), batch_size):
+                batch = self.stock_universe[i:i+batch_size]
+                market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
+                
+                for symbol, data in market_data.items():
+                    if len(data['close']) < 50:
+                        continue
+                    
+                    indicators = self.calculate_indicators(data)
+                    if not indicators:
+                        continue
+                    
+                    # Mean reversion criteria
+                    if (indicators.get('rsi_5', 50) < 30 and
+                        data['close'][-1] < indicators.get('bb_lower', data['close'][-1]) and
+                        indicators.get('volume_ratio', 0) > 1.2 and
+                        indicators.get('price_change', 0) < -0.02):  # Oversold condition
+                        
+                        candidates.append({
+                            'symbol': symbol,
+                            'price': float(data['close'][-1]),
+                            'change_pct': float(indicators['price_change']),
+                            'volume': int(data['volume'][-1]),
+                            'avg_volume': int(np.mean(data['volume'][-20:])),
+                            'indicators': indicators
+                        })
+                
+                time.sleep(0.2)
+                    
+        except Exception as e:
+            logger.error(f"Error screening mean reversion candidates: {e}")
+        
+        return sorted(candidates, key=lambda x: x['indicators'].get('rsi_5', 50))[:10]
+    
+    def screen_breakout_candidates(self):
+        """Screen for breakout trading candidates"""
+        candidates = []
+        
+        try:
+            batch_size = 20
+            for i in range(0, len(self.stock_universe), batch_size):
+                batch = self.stock_universe[i:i+batch_size]
+                market_data = self.fetch_market_data(batch, timeframe='1Min', limit=200)
+                
+                for symbol, data in market_data.items():
+                    if len(data['close']) < 50:
+                        continue
+                    
+                    indicators = self.calculate_indicators(data)
+                    if not indicators:
+                        continue
+                    
+                    # Calculate opening range (first 30 minutes)
+                    opening_range_high = np.max(data['high'][:30]) if len(data['high']) > 30 else data['high'][0]
+                    current_price = data['close'][-1]
+                    
+                    # Breakout criteria
+                    if (current_price > opening_range_high * 1.005 and  # 0.5% breakout
+                        indicators.get('volume_ratio', 0) > 1.5 and
+                        indicators.get('adx', 0) > 25):
+                        
+                        candidates.append({
+                            'symbol': symbol,
+                            'price': float(current_price),
+                            'change_pct': float(indicators['price_change']),
+                            'volume': int(data['volume'][-1]),
+                            'avg_volume': int(np.mean(data['volume'][-20:])),
+                            'opening_range': {'high': float(opening_range_high)},
+                            'indicators': indicators
+                        })
+                
+                time.sleep(0.2)
+                    
+        except Exception as e:
+            logger.error(f"Error screening breakout candidates: {e}")
+        
+        return sorted(candidates, key=lambda x: x['change_pct'], reverse=True)[:10]
+    
     def get_candidates_by_strategy(self, strategy):
-        """
-        Dummy candidate generator for testing purposes.
-        Replace this with real screening logic.
-        """
-        # You can customize these for real data/logic!
-        base = {
-            'momentum': [
-                {'symbol': 'AAPL', 'price': 185.0, 'change_pct': 0.06, 'volume': 5000000, 'avg_volume': 2400000,
-                 'indicators': {'macd': 0.4, 'adx': 29, 'vwap': 182.0}},
-                {'symbol': 'TSLA', 'price': 270.0, 'change_pct': 0.11, 'volume': 9000000, 'avg_volume': 3200000,
-                 'indicators': {'macd': 0.35, 'adx': 32, 'vwap': 265.0}}
-            ],
-            'mean_reversion': [
-                {'symbol': 'MSFT', 'price': 305.0, 'change_pct': -0.07, 'volume': 6000000, 'avg_volume': 2600000,
-                 'indicators': {'rsi_5': 22, 'bb_lower': 306.0, 'macd': -0.12}},
-            ],
-            'breakout': [
-                {'symbol': 'NVDA', 'price': 830.0, 'change_pct': 0.08, 'volume': 7000000, 'avg_volume': 2800000,
-                 'opening_range': {'high': 820.0}, 'indicators': {'adx': 31, 'atr': 7.2}},
-            ]
-        }
-        return base.get(strategy, [])
-
-    # ... (rest of class unchanged) ...
+        """Get candidates for specified strategy"""
+        if strategy == 'momentum':
+            return self.screen_momentum_candidates()
+        elif strategy == 'mean_reversion':
+            return self.screen_mean_reversion_candidates()
+        elif strategy == 'breakout':
+            return self.screen_breakout_candidates()
+        else:
+            return []
 
 class EnhancedTradingBot:
     """Enhanced trading bot with live Alpaca & simulation support."""
@@ -137,7 +507,7 @@ class EnhancedTradingBot:
         self.initial_balance = 100000.0
         self.daily_starting_balance = 100000.0
 
-        self.market_data = SimulatedMarketData()  # Only used in simulation mode
+        self.market_data = None  # Will be initialized based on mode
         self.near_miss_log = deque(maxlen=MAX_NEAR_MISS_LOG)
         self.all_candidates = {'momentum': [], 'mean_reversion': [], 'breakout': []}
         self.market_regime = "neutral"
@@ -163,26 +533,210 @@ class EnhancedTradingBot:
                 self.buying_power = float(account.buying_power)
                 self.initial_balance = float(account.equity)
                 self.is_simulation = False
-                self.status = "LIVE TRADING - CONNECTED TO ALPACA"
-                logger.info("🔥 LIVE TRADING MODE: Connected to Alpaca successfully. Real money at risk!")
+                self.status = "PAPER TRADING - CONNECTED TO ALPACA"
+                self.market_data = AlpacaMarketData(self.api)
+                logger.info("📊 PAPER TRADING MODE: Connected to Alpaca successfully. Using real data, paper trades.")
             except Exception as e:
                 self.api = None
                 self.is_simulation = True
                 self.status = "SIMULATION - Alpaca connection failed"
                 logger.error(f"Failed to connect to Alpaca: {e}")
 
-        # Load data
+        # Initialize market data and check market hours
         if self.is_simulation:
+            from collections import namedtuple
+            # Create a simple fallback for simulation
+            SimData = namedtuple('SimData', ['get_candidates_by_strategy'])
+            self.market_data = SimData(get_candidates_by_strategy=lambda x: [])
             self._initialize_sample_data()
         else:
             self._initialize_live_data()
+            self.is_trading_hours = self.is_market_open()
+
+    def is_market_open(self):
+        """Check if market is currently open using Alpaca calendar"""
+        if not self.api:
+            # Fallback to basic time check
+            now = datetime.now(MARKET_TIMEZONE)
+            is_weekday = now.weekday() < 5
+            is_trading_time = (now.hour > MARKET_OPEN_TIME[0] or 
+                             (now.hour == MARKET_OPEN_TIME[0] and now.minute >= MARKET_OPEN_TIME[1])) and \
+                            (now.hour < MARKET_CLOSE_TIME[0] or 
+                             (now.hour == MARKET_CLOSE_TIME[0] and now.minute < MARKET_CLOSE_TIME[1]))
+            return is_weekday and is_trading_time
+        
+        try:
+            # Get today's market calendar
+            today = datetime.now(MARKET_TIMEZONE).date()
+            calendar = self.api.get_calendar(start=today, end=today)
+            
+            if not calendar:
+                return False
+            
+            market_day = calendar[0]
+            now = datetime.now(MARKET_TIMEZONE)
+            
+            # Convert market open/close times to datetime objects
+            market_open = datetime.combine(today, market_day.open.time()).replace(tzinfo=MARKET_TIMEZONE)
+            market_close = datetime.combine(today, market_day.close.time()).replace(tzinfo=MARKET_TIMEZONE)
+            
+            return market_open <= now <= market_close
+            
+        except Exception as e:
+            logger.error(f"Error checking market hours: {e}")
+            # Fallback to basic time check
+            now = datetime.now(MARKET_TIMEZONE)
+            is_weekday = now.weekday() < 5
+            is_trading_time = (now.hour > MARKET_OPEN_TIME[0] or 
+                             (now.hour == MARKET_OPEN_TIME[0] and now.minute >= MARKET_OPEN_TIME[1])) and \
+                            (now.hour < MARKET_CLOSE_TIME[0] or 
+                             (now.hour == MARKET_CLOSE_TIME[0] and now.minute < MARKET_CLOSE_TIME[1]))
+            return is_weekday and is_trading_time
+
+    def update_position_prices_live(self):
+        """Update position prices with real market data"""
+        if not self.api or not self.market_data:
+            return
+        
+        for symbol, pos in list(self.positions.items()):
+            if pos['status'] == 'OPEN':
+                try:
+                    current_price = self.market_data.get_current_price(symbol)
+                    if current_price:
+                        pos['current_price'] = current_price
+                        # Recalculate P&L
+                        pos['pnl'] = (current_price - pos['entry_price']) * pos['shares']
+                        pos['pnl_pct'] = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                except Exception as e:
+                    logger.error(f"Error updating price for {symbol}: {e}")
 
     def update_position_prices(self):
-        # Only in simulation: randomly adjust current price up/down by up to 1.5%
-        for symbol, pos in self.positions.items():
-            if pos['status'] == 'OPEN':
-                change_pct = random.uniform(-0.015, 0.015)
-                pos['current_price'] = round(pos['current_price'] * (1 + change_pct), 2)
+        """Update position prices based on mode"""
+        if self.is_simulation:
+            # Simulation: randomly adjust prices
+            for symbol, pos in self.positions.items():
+                if pos['status'] == 'OPEN':
+                    change_pct = random.uniform(-0.015, 0.015)
+                    pos['current_price'] = round(pos['current_price'] * (1 + change_pct), 2)
+                    pos['pnl'] = (pos['current_price'] - pos['entry_price']) * pos['shares']
+                    pos['pnl_pct'] = (pos['current_price'] - pos['entry_price']) / pos['entry_price'] * 100
+        else:
+            # Live mode: get real prices
+            self.update_position_prices_live()
+
+    def place_bracket_order(self, symbol, qty, strategy):
+        """Place bracket order with stop-loss and take-profit"""
+        if not self.api:
+            return self.execute_trade(symbol, 0, qty, strategy)  # Fallback to regular trade
+        
+        try:
+            # Get current price
+            current_price = self.market_data.get_current_price(symbol) if self.market_data else None
+            if not current_price:
+                logger.error(f"Could not get current price for {symbol}")
+                return False
+            
+            stop_price = current_price * (1 - STOP_LOSS_PCT)
+            take_profit_price = current_price * (1 + TAKE_PROFIT_PCT)
+            
+            # Place bracket order
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='buy',
+                type='market',
+                time_in_force='day',
+                order_class='bracket',
+                stop_loss={'stop_price': str(stop_price)},
+                take_profit={'limit_price': str(take_profit_price)}
+            )
+            
+            logger.info(f"Bracket order placed for {symbol}: {order}")
+            
+            # Update local tracking
+            self.positions[symbol] = {
+                'symbol': symbol,
+                'entry_price': current_price,
+                'current_price': current_price,
+                'shares': qty,
+                'stop_loss': stop_price,
+                'take_profit': take_profit_price,
+                'entry_time': datetime.now(),
+                'status': 'OPEN',
+                'pnl': 0,
+                'pnl_pct': 0,
+                'strategy': strategy,
+                'order_id': order.id
+            }
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error placing bracket order for {symbol}: {e}")
+            return False
+
+    def monitor_orders(self):
+        """Monitor and update order status"""
+        if not self.api:
+            return
+        
+        try:
+            orders = self.api.list_orders(status='open')
+            filled_orders = self.api.list_orders(status='filled', limit=50)
+            
+            # Update positions based on filled orders
+            for order in filled_orders:
+                if order.symbol in self.positions:
+                    pos = self.positions[order.symbol]
+                    if hasattr(pos, 'order_id') and pos.get('order_id') == order.id:
+                        if order.side == 'sell':
+                            # Position was closed
+                            self.close_position(order.symbol, float(order.filled_avg_price), f'SELL ({order.order_type})')
+                        
+        except Exception as e:
+            logger.error(f"Error monitoring orders: {e}")
+
+    def calculate_daily_performance(self):
+        """Calculate real daily P&L from Alpaca account"""
+        if not self.api:
+            # Simulation fallback
+            return {
+                'daily_pnl': self.daily_pnl,
+                'daily_return_pct': (self.daily_pnl / self.daily_starting_balance) * 100,
+                'total_return_pct': ((self.account_balance - self.initial_balance) / self.initial_balance) * 100
+            }
+        
+        try:
+            account = self.api.get_account()
+            portfolio_history = self.api.get_portfolio_history(
+                period='1D',
+                timeframe='1Min'
+            )
+            
+            if portfolio_history and len(portfolio_history.equity) > 0:
+                current_equity = float(account.equity)
+                start_equity = portfolio_history.equity[0]
+                daily_pnl = current_equity - start_equity
+                daily_return_pct = (daily_pnl / start_equity) * 100
+                
+                total_return_pct = ((current_equity - self.initial_balance) / self.initial_balance) * 100
+                
+                return {
+                    'daily_pnl': daily_pnl,
+                    'daily_return_pct': daily_return_pct,
+                    'total_return_pct': total_return_pct,
+                    'current_equity': current_equity
+                }
+            
+        except Exception as e:
+            logger.error(f"Error calculating daily performance: {e}")
+        
+        # Fallback calculation
+        return {
+            'daily_pnl': self.daily_pnl,
+            'daily_return_pct': (self.daily_pnl / self.daily_starting_balance) * 100,
+            'total_return_pct': ((self.account_balance - self.initial_balance) / self.initial_balance) * 100
+        }
 
     def check_end_of_day(self):
         now = datetime.now(MARKET_TIMEZONE)
@@ -420,15 +974,11 @@ class EnhancedTradingBot:
 
     def get_real_market_candidates(self, strategy):
         """Get real market data candidates from Alpaca instead of simulated data"""
-        if self.is_simulation or not self.api:
-            return self.market_data.get_candidates_by_strategy(strategy)
+        if self.is_simulation or not self.market_data:
+            return []  # Return empty for simulation
         
         try:
-            # In live mode, you would implement real market screening here using Alpaca's market data API
-            # For now, return empty list to avoid using simulated data
-            # You would typically use self.api.get_bars(), get_quotes(), etc.
-            logger.info(f"Live mode: Real market screening for {strategy} strategy should be implemented here")
-            return []
+            return self.market_data.get_candidates_by_strategy(strategy)
         except Exception as e:
             logger.error(f"Error fetching real market data for {strategy}: {e}")
             return []
@@ -476,58 +1026,82 @@ class EnhancedTradingBot:
         if not self.is_trading_hours or self.pause_trading_until and datetime.now() < self.pause_trading_until:
             return False
 
-        # --- Check for open orders in Alpaca (avoid duplicate BUY orders) ---
+        # Use bracket orders when possible (paper trading mode)
         if not self.is_simulation and self.api:
             try:
+                # Check for existing open orders
                 open_orders = self.api.list_orders(status='open')
                 for order in open_orders:
-                    # Only block new BUY order if there is already an open BUY order for the symbol
-                    if order.symbol == symbol and order.side == 'buy' and order.status == 'open':
+                    if order.symbol == symbol and order.side == 'buy':
                         logger.info(f"Open BUY order already exists for {symbol}. Skipping duplicate order.")
                         return False
+                
+                # Try to place bracket order first
+                if self.place_bracket_order(symbol, shares, strategy):
+                    logger.info(f"Bracket order placed successfully for {symbol}")
+                    # Add to trades log
+                    self.trades_log.append({
+                        'date': datetime.now().date(),
+                        'time': datetime.now().strftime("%H:%M:%S"),
+                        'action': 'BUY (BRACKET)',
+                        'symbol': symbol,
+                        'price': price,
+                        'shares': shares,
+                        'pnl': 0,
+                        'balance': self.account_balance,
+                        'strategy': strategy
+                    })
+                    return True
+                else:
+                    # Fallback to regular market order
+                    order = self.api.submit_order(
+                        symbol=symbol,
+                        qty=shares,
+                        side='buy',
+                        type='market',
+                        time_in_force='day'
+                    )
+                    logger.info(f"Regular market order placed for {symbol}: {order}")
+                    
             except Exception as e:
-                logger.error(f"Error checking open orders for {symbol}: {e}")
-                # You may want to skip or continue depending on your risk tolerance
-
-            # If no open BUY order, submit order as before:
-            try:
-                order = self.api.submit_order(
-                    symbol=symbol,
-                    qty=shares,
-                    side='buy',
-                    type='market',
-                    time_in_force='day'
-                )
-                logger.info(f"Alpaca BUY order submitted: {order}")
-            except Exception as e:
-                logger.error(f"Failed to submit Alpaca BUY order: {e}")
+                logger.error(f"Failed to submit order for {symbol}: {e}")
                 return False
 
-        # Always update local state for UI/tracking
+        # Always update local state for UI/tracking (simulation or after successful order)
+        actual_price = price
+        if not self.is_simulation and self.market_data:
+            # Get real current price
+            real_price = self.market_data.get_current_price(symbol)
+            if real_price:
+                actual_price = real_price
+
         self.positions[symbol] = {
             'symbol': symbol,
-            'entry_price': price,
-            'current_price': price,
+            'entry_price': actual_price,
+            'current_price': actual_price,
             'shares': shares,
-            'stop_loss': price * (1 - STOP_LOSS_PCT),
-            'take_profit': price * (1 + TAKE_PROFIT_PCT),
+            'stop_loss': actual_price * (1 - STOP_LOSS_PCT),
+            'take_profit': actual_price * (1 + TAKE_PROFIT_PCT),
             'entry_time': datetime.now(),
             'status': 'OPEN',
             'pnl': 0,
             'pnl_pct': 0,
             'strategy': strategy
         }
-        self.trades_log.append({
-            'date': datetime.now().date(),
-            'time': datetime.now().strftime("%H:%M:%S"),
-            'action': 'BUY',
-            'symbol': symbol,
-            'price': price,
-            'shares': shares,
-            'pnl': 0,
-            'balance': self.account_balance,
-            'strategy': strategy
-        })
+        
+        if self.is_simulation:
+            self.trades_log.append({
+                'date': datetime.now().date(),
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'action': 'BUY (SIM)',
+                'symbol': symbol,
+                'price': actual_price,
+                'shares': shares,
+                'pnl': 0,
+                'balance': self.account_balance,
+                'strategy': strategy
+            })
+        
         return True
 
 
@@ -545,16 +1119,16 @@ if __name__ == "__main__":
         bot.refresh_account_and_positions()
     stats = bot.get_stats()
 
-    st.title("🚀 Enhanced Multi-Strategy Trading Bot")
-    st.caption("Professional-grade bot with Alpaca LIVE mode or simulation fallback")
+    st.title("🚀 Enhanced Multi-Strategy Paper Trading Bot")
+    st.caption("Professional-grade bot with Alpaca Paper Trading integration")
 
     # Logging & status info
     if bot.is_simulation:
         st.warning("🔒 Running in simulation mode. No real trades or balances.")
         logger.warning("Simulation mode: Alpaca credentials missing or connection failed.")
     else:
-        st.success("✅ Connected to Alpaca – LIVE account and positions loaded.")
-        logger.info("LIVE mode: Alpaca connection established.")
+        st.success("📊 Connected to Alpaca Paper Trading – Real data, paper trades only.")
+        logger.info("Paper Trading mode: Using real market data with paper account.")
 
     # --- Remainder of your Streamlit UI ---
     # Use your existing Streamlit code for UI. No change needed.
@@ -724,8 +1298,11 @@ if __name__ == "__main__":
             }
             st.session_state['last_candidate_refresh'] = time.time()
 
-            # --- 1. Update simulated prices for open positions ---
-            if bot.is_simulation:
+            # --- 1. Monitor orders and update positions ---
+            if not bot.is_simulation:
+                bot.monitor_orders()
+                bot.update_position_prices_live()
+            else:
                 bot.update_position_prices()
 
             # --- 2. Auto-buy logic (for every candidate) ---
@@ -739,6 +1316,11 @@ if __name__ == "__main__":
             # --- 3. Sell logic for all open positions ---
             bot.check_and_sell_positions()
             bot.check_end_of_day()
+            
+            # --- 4. Update performance metrics ---
+            if not bot.is_simulation:
+                performance = bot.calculate_daily_performance()
+                bot.daily_pnl = performance.get('daily_pnl', bot.daily_pnl)
 
         # Manual button
         if st.button("🔍 Scan for New Candidates"):
@@ -1191,11 +1773,11 @@ if __name__ == "__main__":
 
         with disclaimer_col1:
             st.warning("""
-            **⚠️ Paper Trading Only**
+            **✅ Paper Trading Mode**
             - Uses Alpaca Paper Trading API
+            - Real market data, simulated trades
             - No real money at risk
-            - Educational/demonstration purposes
-            - Results are simulated
+            - Perfect for learning and testing strategies
             """)
 
         with disclaimer_col2:
