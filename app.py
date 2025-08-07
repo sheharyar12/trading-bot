@@ -188,7 +188,7 @@ class EnhancedTradingBot:
         now = datetime.now(MARKET_TIMEZONE)
         if now.hour > MARKET_CLOSE_TIME[0] or (now.hour == MARKET_CLOSE_TIME[0] and now.minute >= MARKET_CLOSE_TIME[1]):
             for symbol, pos in list(self.positions.items()):
-                if pos['status'] == 'OPEN':
+                if pos['status'] in ('OPEN', 'LONG', 'SHORT'):  # Accept all
                     self.close_position(symbol, pos['current_price'], 'SELL (END_OF_DAY)')
 
     def check_and_sell_positions(self):
