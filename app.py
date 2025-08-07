@@ -396,20 +396,19 @@ class EnhancedTradingBot:
 
             # FIXED: remove limit argument
             activities = self.api.get_activities(activity_types="FILL")
-            for act in activities[:50]:   # slice for most recent 50
-                if act.status == 'filled':
-                    action = "BUY" if act.side == 'buy' else "SELL"
-                    self.trades_log.append({
-                        'date': act.transaction_time.date(),
-                        'time': act.transaction_time.strftime("%H:%M:%S"),
-                        'action': action,
-                        'symbol': act.symbol,
-                        'price': float(act.price),
-                        'shares': int(float(act.qty)),
-                        'pnl': 0,
-                        'balance': self.account_balance,
-                        'strategy': 'unknown'
-                    })
+            for act in activities[:50]:   # most recent 50 FILL activities
+                action = "BUY" if act.side == 'buy' else "SELL"
+                self.trades_log.append({
+                    'date': act.transaction_time.date(),
+                    'time': act.transaction_time.strftime("%H:%M:%S"),
+                    'action': action,
+                    'symbol': act.symbol,
+                    'price': float(act.price),
+                    'shares': int(float(act.qty)),
+                    'pnl': 0,
+                    'balance': self.account_balance,
+                    'strategy': 'unknown'
+                })
         except Exception as e:
             logger.error(f"Failed to fetch live data from Alpaca: {e}")
 
