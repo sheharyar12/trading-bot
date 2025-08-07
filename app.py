@@ -521,6 +521,11 @@ def get_bot():
 if __name__ == "__main__":
     bot = get_bot()
 
+    # 🚨 Always refresh live data before rendering the dashboard!
+    if not bot.is_simulation:
+        bot.refresh_account_and_positions()
+    stats = bot.get_stats()
+
     st.title("🚀 Enhanced Multi-Strategy Trading Bot")
     st.caption("Professional-grade bot with Alpaca LIVE mode or simulation fallback")
 
