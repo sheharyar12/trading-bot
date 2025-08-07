@@ -484,7 +484,19 @@ if __name__ == "__main__":
     with tab2:
         st.subheader("🎯 Multi-Strategy Candidates")
 
-        all_candidates = stats.get('all_candidates', {})
+        # --- BEGIN: Manual Scan Button logic ---
+        if 'all_candidates' not in st.session_state:
+            st.session_state['all_candidates'] = bot.all_candidates
+
+        if st.button("🔍 Scan for New Candidates"):
+            st.session_state['all_candidates'] = {
+                'momentum': bot.market_data.get_candidates_by_strategy('momentum'),
+                'mean_reversion': bot.market_data.get_candidates_by_strategy('mean_reversion') if ENABLE_MEAN_REVERSION else [],
+                'breakout': bot.market_data.get_candidates_by_strategy('breakout')
+            }
+            st.success("✅ Candidates refreshed!")
+
+        all_candidates = st.session_state['all_candidates']
 
         if any(candidates for candidates in all_candidates.values()):
             # Strategy overview
