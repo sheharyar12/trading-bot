@@ -242,6 +242,53 @@ class EnhancedTradingBot:
         })
         del self.positions[symbol]
 
+    def refresh_account_and_positions(self):
+        if not self.is_simulation and self.api:
+            try:
+                account = self.api.get_account()
+                self.account_balance = float(account.cash)
+                self.buying_power = float(account.buying_power)
+                self.initial_balance = float(account.equity)  # Or track this separately if you want initial at session start
+
+                # Refresh open positions
+                positions = self.api.list_positions()
+                self.positions = {}
+                for pos in positions:
+                    self.positions[pos.symbol] = {
+                        'symbol': pos.symbol,
+                        'entry_price': float(pos.avg_entry_price),
+                        'current_price': float(pos.current_price),
+                        'shares': int(float(pos.qty)),
+                        'stop_loss': None,
+                        'take_profit': None,
+                        'entry_time': None,
+                        'status': pos.side.upper(),
+                        'pnl': float(pos.unrealized_pl),
+                        'pnl_pct': float(pos.unrealized_plpc) * 100,
+                        'strategy': 'unknown',
+                    }
+
+                # Refresh trades
+                self.trades_log = []
+                activities = self.api.get_activities(activity_types="FILL")
+                for act in activities[:50]:
+                    if act.status == 'filled':
+                        action = "BUY" if act.side == 'buy' else "SELL"
+                        self.trades_log.append({
+                            'date': act.transaction_time.date(),
+                            'time': act.transaction_time.strftime("%H:%M:%S"),
+                            'action': action,
+                            'symbol': act.symbol,
+                            'price': float(act.price),
+                            'shares': int(float(act.qty)),
+                            'pnl': 0,
+                            'balance': self.account_balance,
+                            'strategy': 'unknown'
+                        })
+            except Exception as e:
+                logger.error(f"Failed to refresh Alpaca account/positions: {e}")
+
+
 
     def _initialize_sample_data(self):
         # ... use your sample data initialization as before ...
@@ -493,6 +540,8 @@ if __name__ == "__main__":
 
     # For example:
     # Get current stats
+    if not bot.is_simulation:
+        bot.refresh_account_and_positions()
     stats = bot.get_stats()
 
     # Status Header
