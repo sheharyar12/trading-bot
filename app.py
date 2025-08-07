@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 import random
 import logging
+import streamlit as st
 from typing import List, Dict, Optional
 import threading
 from collections import deque
@@ -44,29 +45,26 @@ st.set_page_config(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# CONFIGURATION FROM ENVIRONMENT VARIABLES
-ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', '')
-ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY', '')
+ALPACA_API_KEY = st.secrets.get('ALPACA_API_KEY', '')
+ALPACA_SECRET_KEY = st.secrets.get('ALPACA_SECRET_KEY', '')
 ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'
 
-# Pushover Configuration
-PUSHOVER_USER_KEY = os.getenv('PUSHOVER_USER_KEY', '')
-PUSHOVER_APP_TOKEN = os.getenv('PUSHOVER_APP_TOKEN', '')
+PUSHOVER_USER_KEY = st.secrets.get('PUSHOVER_USER_KEY', '')
+PUSHOVER_APP_TOKEN = st.secrets.get('PUSHOVER_APP_TOKEN', '')
 
-# Enhanced Trading Parameters
-POSITION_SIZE = int(os.getenv('POSITION_SIZE', '100'))
-STOP_LOSS_PCT = float(os.getenv('STOP_LOSS_PCT', '0.02'))
-TAKE_PROFIT_PCT = float(os.getenv('TAKE_PROFIT_PCT', '0.07'))
-VOLUME_MULTIPLIER = float(os.getenv('VOLUME_MULTIPLIER', '2.0'))
-MIN_PRICE_CHANGE_PCT = float(os.getenv('MIN_PRICE_CHANGE_PCT', '0.05'))
+POSITION_SIZE = int(st.secrets.get('POSITION_SIZE', '100'))
+STOP_LOSS_PCT = float(st.secrets.get('STOP_LOSS_PCT', '0.02'))
+TAKE_PROFIT_PCT = float(st.secrets.get('TAKE_PROFIT_PCT', '0.07'))
+VOLUME_MULTIPLIER = float(st.secrets.get('VOLUME_MULTIPLIER', '2.0'))
+MIN_PRICE_CHANGE_PCT = float(st.secrets.get('MIN_PRICE_CHANGE_PCT', '0.05'))
 
-DAILY_PROFIT_TARGET_PCT = float(os.getenv('DAILY_PROFIT_TARGET_PCT', '0.04'))
-MAX_DAILY_LOSS_PCT = float(os.getenv('MAX_DAILY_LOSS_PCT', '0.02'))
-ENABLE_MEAN_REVERSION = os.getenv('ENABLE_MEAN_REVERSION', 'true').lower() == 'true'
-ENABLE_SHORT_SELLING = os.getenv('ENABLE_SHORT_SELLING', 'false').lower() == 'true'
-MAX_NEAR_MISS_LOG = int(os.getenv('MAX_NEAR_MISS_LOG', '50'))
-MAX_CONCURRENT_POSITIONS = int(os.getenv('MAX_CONCURRENT_POSITIONS', '5'))
-NO_TRADES_AFTER_HOUR = int(os.getenv('NO_TRADES_AFTER_HOUR', '15'))
+DAILY_PROFIT_TARGET_PCT = float(st.secrets.get('DAILY_PROFIT_TARGET_PCT', '0.04'))
+MAX_DAILY_LOSS_PCT = float(st.secrets.get('MAX_DAILY_LOSS_PCT', '0.02'))
+ENABLE_MEAN_REVERSION = str(st.secrets.get('ENABLE_MEAN_REVERSION', 'true')).lower() == 'true'
+ENABLE_SHORT_SELLING = str(st.secrets.get('ENABLE_SHORT_SELLING', 'false')).lower() == 'true'
+MAX_NEAR_MISS_LOG = int(st.secrets.get('MAX_NEAR_MISS_LOG', '50'))
+MAX_CONCURRENT_POSITIONS = int(st.secrets.get('MAX_CONCURRENT_POSITIONS', '5'))
+NO_TRADES_AFTER_HOUR = int(st.secrets.get('NO_TRADES_AFTER_HOUR', '15'))
 
 # Market hours
 MARKET_TIMEZONE = pytz.timezone('US/Eastern')
