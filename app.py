@@ -252,43 +252,55 @@ class AlpacaMarketData:
             return {}
         
         try:
-            self._rate_limit()
-            
             # Convert single symbol to list
             if isinstance(symbols, str):
                 symbols = [symbols]
             
-            # Limit symbols per request to avoid API limits
-            symbols = symbols[:50]  # Max 50 symbols per request
-            
-            end_time = datetime.now(pytz.UTC)
-            start_time = end_time - timedelta(days=5)  # Get 5 days of data
-            
-            bars = self.api.get_bars(
-                symbols=symbols,
-                timeframe=timeframe,
-                start=start_time,
-                end=end_time,
-                limit=limit
-            ).df
-            
-            if bars.empty:
-                logger.warning(f"No data received for symbols: {symbols}")
-                return {}
-            
-            # Process and structure the data
             market_data = {}
+            
+            # Fetch data for each symbol individually (Alpaca API requirement)
             for symbol in symbols:
-                if symbol in bars.index.get_level_values('symbol'):
-                    symbol_data = bars.xs(symbol, level='symbol')
-                    if not symbol_data.empty:
-                        market_data[symbol] = {
-                            'high': symbol_data['high'].values,
-                            'low': symbol_data['low'].values,
-                            'close': symbol_data['close'].values,
-                            'volume': symbol_data['volume'].values,
-                            'timestamp': symbol_data.index.values
-                        }
+                try:
+                    self._rate_limit()
+                    
+                    end_time = datetime.now(pytz.UTC)
+                    start_time = end_time - timedelta(days=2)  # Get 2 days of data
+                    
+                    # Use correct parameter name 'symbol' (singular)
+                    bars = self.api.get_bars(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        start=start_time,
+                        end=end_time,
+                        limit=limit
+                    )
+                    
+                    if bars and len(bars) > 0:
+                        # Convert to DataFrame if it's a list
+                        if hasattr(bars, 'df'):
+                            df = bars.df
+                        else:
+                            # Handle different response formats
+                            df = pd.DataFrame([{
+                                'high': bar.h,
+                                'low': bar.l,
+                                'close': bar.c,
+                                'volume': bar.v,
+                                'timestamp': bar.t
+                            } for bar in bars])
+                        
+                        if not df.empty:
+                            market_data[symbol] = {
+                                'high': df['high'].values,
+                                'low': df['low'].values,
+                                'close': df['close'].values,
+                                'volume': df['volume'].values,
+                                'timestamp': df.index.values if hasattr(df, 'index') else df['timestamp'].values
+                            }
+                    
+                except Exception as symbol_error:
+                    logger.warning(f"Error fetching data for {symbol}: {symbol_error}")
+                    continue
             
             return market_data
             
@@ -300,10 +312,34 @@ class AlpacaMarketData:
         """Get current/latest price for a symbol"""
         try:
             self._rate_limit()
-            quotes = self.api.get_latest_quote(symbol)
-            if quotes:
-                return (quotes.bid_price + quotes.ask_price) / 2  # Mid price
+            
+            # Try to get latest quote first
+            try:
+                quote = self.api.get_latest_quote(symbol)
+                if quote and hasattr(quote, 'bid_price') and hasattr(quote, 'ask_price'):
+                    return (quote.bid_price + quote.ask_price) / 2  # Mid price
+            except:
+                pass
+            
+            # Fallback: get latest bar data
+            try:
+                bars = self.api.get_bars(
+                    symbol=symbol,
+                    timeframe='1Min',
+                    limit=1
+                )
+                if bars and len(bars) > 0:
+                    latest_bar = bars[-1]
+                    if hasattr(latest_bar, 'c'):
+                        return latest_bar.c  # Close price
+                    elif hasattr(latest_bar, 'close'):
+                        return latest_bar.close
+            except:
+                pass
+                
+            logger.warning(f"Could not get current price for {symbol}")
             return None
+            
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {e}")
             return None
@@ -577,8 +613,9 @@ class EnhancedTradingBot:
             now = datetime.now(MARKET_TIMEZONE)
             
             # Convert market open/close times to datetime objects
-            market_open = datetime.combine(today, market_day.open.time()).replace(tzinfo=MARKET_TIMEZONE)
-            market_close = datetime.combine(today, market_day.close.time()).replace(tzinfo=MARKET_TIMEZONE)
+            # market_day.open and .close are already time objects
+            market_open = datetime.combine(today, market_day.open).replace(tzinfo=MARKET_TIMEZONE)
+            market_close = datetime.combine(today, market_day.close).replace(tzinfo=MARKET_TIMEZONE)
             
             return market_open <= now <= market_close
             
@@ -703,39 +740,45 @@ class EnhancedTradingBot:
             return {
                 'daily_pnl': self.daily_pnl,
                 'daily_return_pct': (self.daily_pnl / self.daily_starting_balance) * 100,
-                'total_return_pct': ((self.account_balance - self.initial_balance) / self.initial_balance) * 100
+                'total_return_pct': ((self.account_balance - self.initial_balance) / self.initial_balance) * 100,
+                'current_equity': self.account_balance
             }
         
         try:
             account = self.api.get_account()
-            portfolio_history = self.api.get_portfolio_history(
-                period='1D',
-                timeframe='1Min'
-            )
+            current_equity = float(account.equity)
             
-            if portfolio_history and len(portfolio_history.equity) > 0:
-                current_equity = float(account.equity)
-                start_equity = portfolio_history.equity[0]
-                daily_pnl = current_equity - start_equity
-                daily_return_pct = (daily_pnl / start_equity) * 100
-                
-                total_return_pct = ((current_equity - self.initial_balance) / self.initial_balance) * 100
-                
-                return {
-                    'daily_pnl': daily_pnl,
-                    'daily_return_pct': daily_return_pct,
-                    'total_return_pct': total_return_pct,
-                    'current_equity': current_equity
-                }
+            # Calculate total return
+            total_return_pct = ((current_equity - self.initial_balance) / self.initial_balance) * 100 if self.initial_balance > 0 else 0
+            
+            # For daily P&L, use the difference from daily starting balance
+            # If we don't have daily starting balance stored, use current vs initial as approximation
+            if hasattr(self, 'daily_starting_balance') and self.daily_starting_balance > 0:
+                daily_pnl = current_equity - self.daily_starting_balance
+                daily_return_pct = (daily_pnl / self.daily_starting_balance) * 100
+            else:
+                # Fallback: assume starting balance is initial balance
+                self.daily_starting_balance = self.initial_balance
+                daily_pnl = current_equity - self.initial_balance
+                daily_return_pct = (daily_pnl / self.initial_balance) * 100 if self.initial_balance > 0 else 0
+            
+            return {
+                'daily_pnl': daily_pnl,
+                'daily_return_pct': daily_return_pct,
+                'total_return_pct': total_return_pct,
+                'current_equity': current_equity
+            }
             
         except Exception as e:
             logger.error(f"Error calculating daily performance: {e}")
         
         # Fallback calculation
+        current_equity = self.account_balance
         return {
-            'daily_pnl': self.daily_pnl,
-            'daily_return_pct': (self.daily_pnl / self.daily_starting_balance) * 100,
-            'total_return_pct': ((self.account_balance - self.initial_balance) / self.initial_balance) * 100
+            'daily_pnl': current_equity - self.daily_starting_balance,
+            'daily_return_pct': ((current_equity - self.daily_starting_balance) / self.daily_starting_balance * 100) if self.daily_starting_balance > 0 else 0,
+            'total_return_pct': ((current_equity - self.initial_balance) / self.initial_balance * 100) if self.initial_balance > 0 else 0,
+            'current_equity': current_equity
         }
 
     def check_end_of_day(self):
@@ -800,9 +843,9 @@ class EnhancedTradingBot:
         if not self.is_simulation and self.api:
             try:
                 account = self.api.get_account()
-                self.account_balance = float(account.cash)
+                self.account_balance = float(account.equity)  # Use equity instead of cash for total value
                 self.buying_power = float(account.buying_power)
-                self.initial_balance = float(account.equity)  # Or track this separately if you want initial at session start
+                # Keep initial_balance as the starting equity (don't overwrite it)
 
                 # Refresh open positions
                 positions = self.api.list_positions()
@@ -992,13 +1035,32 @@ class EnhancedTradingBot:
 
         win_rate = (winners / total_trades * 100) if total_trades > 0 else 0
 
-        # Calculate daily progress toward target (sim only)
-        daily_return = (self.daily_pnl / self.daily_starting_balance) if self.daily_starting_balance > 0 else 0
-        target_progress = (daily_return / DAILY_PROFIT_TARGET_PCT) * 100
+        # Get real performance data if connected to Alpaca
+        if not self.is_simulation:
+            try:
+                performance = self.calculate_daily_performance()
+                daily_return_pct = performance.get('daily_return_pct', 0)
+                total_return_pct = performance.get('total_return_pct', 0)
+                current_equity = performance.get('current_equity', self.account_balance)
+                
+                # Update account balance with real equity
+                self.account_balance = current_equity
+                self.daily_pnl = performance.get('daily_pnl', self.daily_pnl)
+                
+            except Exception as e:
+                logger.error(f"Error getting real performance data: {e}")
+                daily_return_pct = (self.daily_pnl / self.daily_starting_balance * 100) if self.daily_starting_balance > 0 else 0
+                total_return_pct = ((self.account_balance - self.initial_balance) / self.initial_balance * 100) if self.initial_balance > 0 else 0
+        else:
+            # Simulation calculations
+            daily_return_pct = (self.daily_pnl / self.daily_starting_balance * 100) if self.daily_starting_balance > 0 else 0
+            total_return_pct = ((self.account_balance - self.initial_balance) / self.initial_balance * 100) if self.initial_balance > 0 else 0
+
+        target_progress = (daily_return_pct / (DAILY_PROFIT_TARGET_PCT * 100)) * 100 if DAILY_PROFIT_TARGET_PCT > 0 else 0
 
         return {
             'status': self.status,
-            'mode': 'LIVE' if not self.is_simulation else 'PROFESSIONAL SIMULATION',
+            'mode': 'PAPER TRADING' if not self.is_simulation else 'PROFESSIONAL SIMULATION',
             'is_trading_hours': self.is_trading_hours,
             'open_positions': open_positions,
             'total_trades': total_trades,
@@ -1015,7 +1077,8 @@ class EnhancedTradingBot:
             'trading_paused': bool(self.pause_trading_until and datetime.now() < self.pause_trading_until),
             'target_progress': target_progress,
             'near_misses_count': len(self.near_miss_log),
-            'daily_return_pct': daily_return * 100,
+            'daily_return_pct': daily_return_pct,
+            'total_return_pct': total_return_pct,
             'all_candidates': self.all_candidates
         }
 
@@ -1172,10 +1235,11 @@ if __name__ == "__main__":
                   f"${stats['buying_power']:,.2f}")
 
     with col3:
-        total_return = ((stats['account_balance'] - stats['initial_balance']) / stats['initial_balance'] * 100)
+        total_return_pct = stats.get('total_return_pct', 0)
+        total_return_dollar = stats['account_balance'] - stats['initial_balance']
         st.metric("📈 Total Return",
-                  f"{total_return:+.2f}%",
-                  delta=f"${stats['account_balance'] - stats['initial_balance']:+,.2f}")
+                  f"{total_return_pct:+.2f}%",
+                  delta=f"${total_return_dollar:+,.2f}")
 
     # Enhanced Trading Metrics
     st.markdown("### 📊 **Trading Performance**")
