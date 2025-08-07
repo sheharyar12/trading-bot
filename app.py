@@ -197,13 +197,14 @@ class EnhancedTradingBot:
             stop_loss = pos.get('stop_loss')
             take_profit = pos.get('take_profit')
 
-            # Only check sell if stop_loss/take_profit are set
             if pos['status'] == 'OPEN':
+                # Only do the comparison if stop_loss is not None
                 if stop_loss is not None and current_price <= stop_loss:
                     self.close_position(symbol, current_price, 'SELL (STOP_LOSS)')
+                # Only do the comparison if take_profit is not None
                 elif take_profit is not None and current_price >= take_profit:
                     self.close_position(symbol, current_price, 'SELL (TAKE_PROFIT)')
-                # Optional: end of day logic, etc.
+                # else: skip this position if both are None
 
     def close_position(self, symbol, exit_price, action):
         pos = self.positions[symbol]
