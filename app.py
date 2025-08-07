@@ -340,165 +340,193 @@ if __name__ == "__main__":
     # The logic below will now work for both sim and live automatically!
 
     # For example:
+    # Get current stats
     stats = bot.get_stats()
-     # Status Header
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if stats['is_trading_hours']:
-                st.success(f"🟢 {stats['status']}")
+
+    # Status Header
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if stats['is_trading_hours']:
+            st.success(f"🟢 {stats['status']}")
+        else:
+            st.info(f"🔴 {stats['status']}")
+    with col2:
+        st.metric("Mode", stats['mode'])
+    with col3:
+        current_time = datetime.now(MARKET_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S ET")
+        st.metric("Current Time", current_time)
+
+    # Main Performance Metrics
+    st.markdown("---")
+    st.markdown("### 💰 **Portfolio Performance**")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        delta_value = stats['account_balance'] - stats['initial_balance']
+        delta_color = "normal" if delta_value >= 0 else "inverse"
+        st.metric("💰 Account Balance",
+                  f"${stats['account_balance']:,.2f}",
+                  delta=f"${delta_value:+,.2f}")
+
+    with col2:
+        st.metric("💵 Buying Power",
+                  f"${stats['buying_power']:,.2f}")
+
+    with col3:
+        total_return = ((stats['account_balance'] - stats['initial_balance']) / stats['initial_balance'] * 100)
+        st.metric("📈 Total Return",
+                  f"{total_return:+.2f}%",
+                  delta=f"${stats['account_balance'] - stats['initial_balance']:+,.2f}")
+
+    # Enhanced Trading Metrics
+    st.markdown("### 📊 **Trading Performance**")
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+    with col1:
+        daily_pnl_color = "normal" if stats['daily_pnl'] >= 0 else "inverse"
+        st.metric("Daily P&L", f"${stats['daily_pnl']:+.2f}",
+                  delta=f"{stats['daily_return_pct']:+.2f}%" if stats['daily_pnl'] != 0 else None)
+
+    with col2:
+        progress_color = "normal" if stats['target_progress'] < 100 else "inverse"
+        st.metric("Daily Target Progress", f"{stats['target_progress']:.0f}%",
+                  delta=f"Goal: {DAILY_PROFIT_TARGET_PCT*100:.0f}%")
+
+    with col3:
+        st.metric("Total P&L", f"${stats['total_pnl']:+.2f}")
+
+    with col4:
+        st.metric("Open Positions", f"{stats['open_positions']}/{MAX_CONCURRENT_POSITIONS}")
+
+    with col5:
+        st.metric("Total Trades", stats['total_trades'])
+
+    with col6:
+        win_color = "normal" if stats['win_rate'] >= 50 else "inverse"
+        st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+
+    # System Status
+    st.markdown("### 🎛️ **System Status**")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        regime_emoji = {"trending": "📈", "ranging": "↔️", "neutral": "⚪"}.get(stats['market_regime'], "❓")
+        st.metric("Market Regime", f"{regime_emoji} {stats['market_regime'].title()}")
+
+    with col2:
+        if stats['trading_paused']:
+            st.metric("Status", "⏸️ Paused", delta="Circuit Breaker Active")
+        elif stats['daily_target_hit']:
+            st.metric("Status", "🎯 Target Hit", delta="Daily goal achieved")
+        elif stats['daily_loss_limit_hit']:
+            st.metric("Status", "🛑 Loss Limit", delta="Daily limit hit")
+        else:
+            st.metric("Status", "✅ Active", delta="All systems operational")
+
+    with col3:
+        loss_color = "inverse" if stats['consecutive_losses'] >= 2 else "normal"
+        st.metric("Consecutive Losses", stats['consecutive_losses'],
+                  delta="Pause at 3" if stats['consecutive_losses'] > 0 else "Normal")
+
+    with col4:
+        st.metric("Near Misses Tracked", stats['near_misses_count'],
+                  delta=f"Capacity: {MAX_NEAR_MISS_LOG}")
+
+    # Main Content Tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Positions", "🎯 Strategies", "📜 Trades", "🔍 Analysis", "ℹ️ Info"])
+
+    with tab1:
+        st.subheader("📊 Current Positions")
+        if bot.positions:
+            positions_data = []
+            for symbol, pos in bot.positions.items():
+                if pos['status'] == 'OPEN':
+                    strategy = pos.get('strategy', 'unknown')
+                    strategy_emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
+                    pnl_indicator = "🟢" if pos['pnl'] > 0 else "🔴" if pos['pnl'] < 0 else "⚪"
+
+                    positions_data.append({
+                        'Symbol': f"{strategy_emoji} {symbol}",
+                        'Strategy': strategy.replace('_', ' ').title(),
+                        'Entry Price': f"${pos['entry_price']:.2f}",
+                        'Current Price': f"${pos['current_price']:.2f}",
+                        'Shares': f"{pos['shares']:,}",
+                        'P&L': f"{pnl_indicator} ${pos['pnl']:+.2f}",
+                        'P&L %': f"{pos['pnl_pct']:+.2f}%",
+                        'Stop Loss': f"${pos['stop_loss']:.2f}",
+                        'Take Profit': f"${pos['take_profit']:.2f}",
+                        'Entry Time': pos['entry_time'].strftime('%H:%M')
+                    })
+
+            if positions_data:
+                df = pd.DataFrame(positions_data)
+                st.dataframe(df, use_container_width=True)
+
+                # Position Summary
+                total_positions = len(positions_data)
+                total_pnl = sum(pos['pnl'] for pos in bot.positions.values() if pos['status'] == 'OPEN')
+                total_invested = sum(pos['entry_price'] * pos['shares'] for pos in bot.positions.values() if pos['status'] == 'OPEN')
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Portfolio Utilization", f"{total_positions}/{MAX_CONCURRENT_POSITIONS}")
+                with col2:
+                    st.metric("Unrealized P&L", f"${total_pnl:+.2f}")
+                with col3:
+                    risk_per_position = POSITION_SIZE * STOP_LOSS_PCT
+                    total_risk = risk_per_position * total_positions
+                    st.metric("Total Risk Exposure", f"${total_risk:.2f}")
             else:
-                st.info(f"🔴 {stats['status']}")
-        with col2:
-            st.metric("Mode", stats['mode'])
-        with col3:
-            current_time = datetime.now(MARKET_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S ET")
-            st.metric("Current Time", current_time)
+                st.info("💼 No open positions currently")
+        else:
+            st.info("📈 Ready for new opportunities")
 
-        # Main Performance Metrics
-        st.markdown("---")
-        st.markdown("### 💰 **Portfolio Performance**")
-        col1, col2, col3 = st.columns(3)
+    with tab2:
+        st.subheader("🎯 Multi-Strategy Candidates")
 
-        with col1:
-            delta_value = stats['account_balance'] - stats['initial_balance']
-            delta_color = "normal" if delta_value >= 0 else "inverse"
-            st.metric("💰 Account Balance",
-                      f"${stats['account_balance']:,.2f}",
-                      delta=f"${delta_value:+,.2f}")
+        all_candidates = stats.get('all_candidates', {})
 
-        with col2:
-            st.metric("💵 Buying Power",
-                      f"${stats['buying_power']:,.2f}")
+        if any(candidates for candidates in all_candidates.values()):
+            # Strategy overview
+            total_candidates = sum(len(candidates) for candidates in all_candidates.values())
+            st.markdown(f"**{total_candidates} opportunities identified** across all strategies")
 
-        with col3:
-            total_return = ((stats['account_balance'] - stats['initial_balance']) / stats['initial_balance'] * 100)
-            st.metric("📈 Total Return",
-                      f"{total_return:+.2f}%",
-                      delta=f"${stats['account_balance'] - stats['initial_balance']:+,.2f}")
+            strategy_tabs = st.tabs(["🚀 Momentum", "🔄 Mean Reversion", "💥 Breakout"])
 
-        # Enhanced Trading Metrics
-        st.markdown("### 📊 **Trading Performance**")
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
+            with strategy_tabs[0]:
+                momentum_candidates = all_candidates.get('momentum', [])
+                if momentum_candidates:
+                    st.markdown("**🚀 Enhanced Momentum Strategy**")
+                    st.caption("Criteria: MACD positive & rising, ADX >25, Price >VWAP, Volume >2x average")
 
-        with col1:
-            daily_pnl_color = "normal" if stats['daily_pnl'] >= 0 else "inverse"
-            st.metric("Daily P&L", f"${stats['daily_pnl']:+.2f}",
-                      delta=f"{stats['daily_return_pct']:+.2f}%" if stats['daily_pnl'] != 0 else None)
+                    for i, c in enumerate(momentum_candidates[:5], 1):
+                        with st.expander(f"#{i} {c['symbol']} - {c['change_pct']:+.2%} | {c['volume']/c['avg_volume']:.1f}x Volume"):
+                            col1, col2, col3 = st.columns(3)
 
-        with col2:
-            progress_color = "normal" if stats['target_progress'] < 100 else "inverse"
-            st.metric("Daily Target Progress", f"{stats['target_progress']:.0f}%",
-                      delta=f"Goal: {DAILY_PROFIT_TARGET_PCT*100:.0f}%")
+                            with col1:
+                                st.metric("Current Price", f"${c['price']:.2f}")
+                                st.metric("Price Change", f"{c['change_pct']:+.2%}")
 
-        with col3:
-            st.metric("Total P&L", f"${stats['total_pnl']:+.2f}")
+                            with col2:
+                                st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
+                                indicators = c.get('indicators', {})
+                                st.metric("ADX (Trend)", f"{indicators.get('adx', 0):.1f}")
 
-        with col4:
-            st.metric("Open Positions", f"{stats['open_positions']}/{MAX_CONCURRENT_POSITIONS}")
-
-        with col5:
-            st.metric("Total Trades", stats['total_trades'])
-
-        with col6:
-            win_color = "normal" if stats['win_rate'] >= 50 else "inverse"
-            st.metric("Win Rate", f"{stats['win_rate']:.1f}%")
-
-        # System Status
-        st.markdown("### 🎛️ **System Status**")
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            regime_emoji = {"trending": "📈", "ranging": "↔️", "neutral": "⚪"}.get(stats['market_regime'], "❓")
-            st.metric("Market Regime", f"{regime_emoji} {stats['market_regime'].title()}")
-
-        with col2:
-            if stats['trading_paused']:
-                st.metric("Status", "⏸️ Paused", delta="Circuit Breaker Active")
-            elif stats['daily_target_hit']:
-                st.metric("Status", "🎯 Target Hit", delta="Daily goal achieved")
-            elif stats['daily_loss_limit_hit']:
-                st.metric("Status", "🛑 Loss Limit", delta="Daily limit hit")
-            else:
-                st.metric("Status", "✅ Active", delta="All systems operational")
-
-        with col3:
-            loss_color = "inverse" if stats['consecutive_losses'] >= 2 else "normal"
-            st.metric("Consecutive Losses", stats['consecutive_losses'],
-                      delta="Pause at 3" if stats['consecutive_losses'] > 0 else "Normal")
-
-        with col4:
-            st.metric("Near Misses Tracked", stats['near_misses_count'],
-                      delta=f"Capacity: {MAX_NEAR_MISS_LOG}")
-
-        # Main Content Tabs
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Positions", "🎯 Strategies", "📜 Trades", "🔍 Analysis", "ℹ️ Info"])
-
-        with tab1:
-            st.subheader("📊 Current Positions")
-            if bot.positions:
-                positions_data = []
-                for symbol, pos in bot.positions.items():
-                    if pos['status'] == 'OPEN':
-                        strategy = pos.get('strategy', 'unknown')
-                        strategy_emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
-                        pnl_indicator = "🟢" if pos['pnl'] > 0 else "🔴" if pos['pnl'] < 0 else "⚪"
-
-                        positions_data.append({
-                            'Symbol': f"{strategy_emoji} {symbol}",
-                            'Strategy': strategy.replace('_', ' ').title(),
-                            'Entry Price': f"${pos['entry_price']:.2f}",
-                            'Current Price': f"${pos['current_price']:.2f}",
-                            'Shares': f"{pos['shares']:,}",
-                            'P&L': f"{pnl_indicator} ${pos['pnl']:+.2f}",
-                            'P&L %': f"{pos['pnl_pct']:+.2f}%",
-                            'Stop Loss': f"${pos['stop_loss']:.2f}",
-                            'Take Profit': f"${pos['take_profit']:.2f}",
-                            'Entry Time': pos['entry_time'].strftime('%H:%M')
-                        })
-
-                if positions_data:
-                    df = pd.DataFrame(positions_data)
-                    st.dataframe(df, use_container_width=True)
-
-                    # Position Summary
-                    total_positions = len(positions_data)
-                    total_pnl = sum(pos['pnl'] for pos in bot.positions.values() if pos['status'] == 'OPEN')
-                    total_invested = sum(pos['entry_price'] * pos['shares'] for pos in bot.positions.values() if pos['status'] == 'OPEN')
-
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Portfolio Utilization", f"{total_positions}/{MAX_CONCURRENT_POSITIONS}")
-                    with col2:
-                        st.metric("Unrealized P&L", f"${total_pnl:+.2f}")
-                    with col3:
-                        risk_per_position = POSITION_SIZE * STOP_LOSS_PCT
-                        total_risk = risk_per_position * total_positions
-                        st.metric("Total Risk Exposure", f"${total_risk:.2f}")
+                            with col3:
+                                st.metric("MACD", f"{indicators.get('macd', 0):+.3f}")
+                                st.metric("vs VWAP", f"{((c['price'] - indicators.get('vwap', c['price'])) / c['price'] * 100):+.1f}%")
                 else:
-                    st.info("💼 No open positions currently")
-            else:
-                st.info("📈 Ready for new opportunities")
+                    st.info("🔍 No momentum opportunities meeting criteria")
 
-        with tab2:
-            st.subheader("🎯 Multi-Strategy Candidates")
+            with strategy_tabs[1]:
+                if ENABLE_MEAN_REVERSION:
+                    mr_candidates = all_candidates.get('mean_reversion', [])
+                    if mr_candidates:
+                        st.markdown("**🔄 Mean Reversion Strategy**")
+                        st.caption("Criteria: RSI(5) <30, Price <Lower Bollinger Band, Volume >1.2x")
 
-            all_candidates = stats.get('all_candidates', {})
-
-            if any(candidates for candidates in all_candidates.values()):
-                # Strategy overview
-                total_candidates = sum(len(candidates) for candidates in all_candidates.values())
-                st.markdown(f"**{total_candidates} opportunities identified** across all strategies")
-
-                strategy_tabs = st.tabs(["🚀 Momentum", "🔄 Mean Reversion", "💥 Breakout"])
-
-                with strategy_tabs[0]:
-                    momentum_candidates = all_candidates.get('momentum', [])
-                    if momentum_candidates:
-                        st.markdown("**🚀 Enhanced Momentum Strategy**")
-                        st.caption("Criteria: MACD positive & rising, ADX >25, Price >VWAP, Volume >2x average")
-
-                        for i, c in enumerate(momentum_candidates[:5], 1):
-                            with st.expander(f"#{i} {c['symbol']} - {c['change_pct']:+.2%} | {c['volume']/c['avg_volume']:.1f}x Volume"):
+                        for i, c in enumerate(mr_candidates[:5], 1):
+                            with st.expander(f"#{i} {c['symbol']} - {c['change_pct']:+.2%} | RSI Oversold"):
                                 col1, col2, col3 = st.columns(3)
 
                                 with col1:
@@ -506,442 +534,416 @@ if __name__ == "__main__":
                                     st.metric("Price Change", f"{c['change_pct']:+.2%}")
 
                                 with col2:
-                                    st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
                                     indicators = c.get('indicators', {})
-                                    st.metric("ADX (Trend)", f"{indicators.get('adx', 0):.1f}")
+                                    st.metric("RSI(5)", f"{indicators.get('rsi_5', 50):.1f}")
+                                    st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
 
                                 with col3:
+                                    bb_distance = ((c['price'] - indicators.get('bb_lower', c['price'])) / c['price'] * 100)
+                                    st.metric("BB Distance", f"{bb_distance:+.1f}%")
                                     st.metric("MACD", f"{indicators.get('macd', 0):+.3f}")
-                                    st.metric("vs VWAP", f"{((c['price'] - indicators.get('vwap', c['price'])) / c['price'] * 100):+.1f}%")
                     else:
-                        st.info("🔍 No momentum opportunities meeting criteria")
+                        st.info("🔍 No oversold opportunities detected")
+                else:
+                    st.warning("⚠️ Mean reversion strategy is disabled")
+                    st.info("Enable via environment variable: ENABLE_MEAN_REVERSION=true")
 
-                with strategy_tabs[1]:
-                    if ENABLE_MEAN_REVERSION:
-                        mr_candidates = all_candidates.get('mean_reversion', [])
-                        if mr_candidates:
-                            st.markdown("**🔄 Mean Reversion Strategy**")
-                            st.caption("Criteria: RSI(5) <30, Price <Lower Bollinger Band, Volume >1.2x")
+            with strategy_tabs[2]:
+                breakout_candidates = all_candidates.get('breakout', [])
+                if breakout_candidates:
+                    st.markdown("**💥 Opening Range Breakout**")
+                    st.caption("Criteria: Break 30-min range +0.5%, Volume confirmation >1.5x")
 
-                            for i, c in enumerate(mr_candidates[:5], 1):
-                                with st.expander(f"#{i} {c['symbol']} - {c['change_pct']:+.2%} | RSI Oversold"):
-                                    col1, col2, col3 = st.columns(3)
+                    for i, c in enumerate(breakout_candidates[:5], 1):
+                        opening_range = c.get('opening_range', {})
+                        breakout_pct = ((c['price'] - opening_range.get('high', c['price'])) / opening_range.get('high', c['price']) * 100)
 
-                                    with col1:
-                                        st.metric("Current Price", f"${c['price']:.2f}")
-                                        st.metric("Price Change", f"{c['change_pct']:+.2%}")
+                        with st.expander(f"#{i} {c['symbol']} - Breakout +{breakout_pct:.1f}%"):
+                            col1, col2, col3 = st.columns(3)
 
-                                    with col2:
-                                        indicators = c.get('indicators', {})
-                                        st.metric("RSI(5)", f"{indicators.get('rsi_5', 50):.1f}")
-                                        st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
+                            with col1:
+                                st.metric("Current Price", f"${c['price']:.2f}")
+                                st.metric("Range High", f"${opening_range.get('high', 0):.2f}")
 
-                                    with col3:
-                                        bb_distance = ((c['price'] - indicators.get('bb_lower', c['price'])) / c['price'] * 100)
-                                        st.metric("BB Distance", f"{bb_distance:+.1f}%")
-                                        st.metric("MACD", f"{indicators.get('macd', 0):+.3f}")
-                        else:
-                            st.info("🔍 No oversold opportunities detected")
-                    else:
-                        st.warning("⚠️ Mean reversion strategy is disabled")
-                        st.info("Enable via environment variable: ENABLE_MEAN_REVERSION=true")
+                            with col2:
+                                st.metric("Breakout %", f"+{breakout_pct:.1f}%")
+                                st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
 
-                with strategy_tabs[2]:
-                    breakout_candidates = all_candidates.get('breakout', [])
-                    if breakout_candidates:
-                        st.markdown("**💥 Opening Range Breakout**")
-                        st.caption("Criteria: Break 30-min range +0.5%, Volume confirmation >1.5x")
+                            with col3:
+                                indicators = c.get('indicators', {})
+                                st.metric("ADX", f"{indicators.get('adx', 0):.1f}")
+                                st.metric("ATR", f"${indicators.get('atr', 0):.2f}")
+                else:
+                    st.info("🔍 No breakout opportunities detected")
 
-                        for i, c in enumerate(breakout_candidates[:5], 1):
-                            opening_range = c.get('opening_range', {})
-                            breakout_pct = ((c['price'] - opening_range.get('high', c['price'])) / opening_range.get('high', c['price']) * 100)
+            # Market context
+            st.markdown("---")
+            active_strategies = [s for s, candidates in all_candidates.items() if candidates]
+            regime_color = {"trending": "🟢", "ranging": "🟡", "neutral": "⚪"}.get(stats['market_regime'], "⚪")
 
-                            with st.expander(f"#{i} {c['symbol']} - Breakout +{breakout_pct:.1f}%"):
-                                col1, col2, col3 = st.columns(3)
-
-                                with col1:
-                                    st.metric("Current Price", f"${c['price']:.2f}")
-                                    st.metric("Range High", f"${opening_range.get('high', 0):.2f}")
-
-                                with col2:
-                                    st.metric("Breakout %", f"+{breakout_pct:.1f}%")
-                                    st.metric("Volume Ratio", f"{c['volume']/c['avg_volume']:.1f}x")
-
-                                with col3:
-                                    indicators = c.get('indicators', {})
-                                    st.metric("ADX", f"{indicators.get('adx', 0):.1f}")
-                                    st.metric("ATR", f"${indicators.get('atr', 0):.2f}")
-                    else:
-                        st.info("🔍 No breakout opportunities detected")
-
-                # Market context
-                st.markdown("---")
-                active_strategies = [s for s, candidates in all_candidates.items() if candidates]
-                regime_color = {"trending": "🟢", "ranging": "🟡", "neutral": "⚪"}.get(stats['market_regime'], "⚪")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown(f"**Market Regime:** {regime_color} {stats['market_regime'].upper()}")
-                with col2:
-                    st.markdown(f"**Active Strategies:** {', '.join(s.title() for s in active_strategies) if active_strategies else 'None'}")
-
-            else:
-                st.info("📊 Scanning for opportunities... Candidates refresh during market hours")
-
-                # Show strategy overview when no candidates
-                st.markdown("### 📚 Strategy Overview")
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.markdown("""
-                    **🚀 Enhanced Momentum**
-                    - MACD positive & rising
-                    - ADX > 25 (strong trend)
-                    - Price above VWAP
-                    - Volume > 2x average
-                    - Breakout confirmation
-                    """)
-
-                with col2:
-                    enabled_status = "✅ Enabled" if ENABLE_MEAN_REVERSION else "❌ Disabled"
-                    st.markdown(f"""
-                    **🔄 Mean Reversion** {enabled_status}
-                    - RSI(5) < 30 (oversold)
-                    - Price < Lower Bollinger Band
-                    - Volume > 1.2x average
-                    - Counter-trend entry
-                    """)
-
-                with col3:
-                    st.markdown("""
-                    **💥 Opening Range Breakout**
-                    - Break 30-min high + 0.5%
-                    - Volume confirmation >1.5x
-                    - No trades after 3:00 PM
-                    - Momentum follow-through
-                    """)
-
-        with tab3:
-            st.subheader("📜 Trade Log & Performance")
-            if bot.trades_log:
-                recent_trades = bot.trades_log[-12:]  # Show more trades
-                enhanced_trades = []
-
-                for trade in recent_trades:
-                    strategy = trade.get('strategy', 'unknown')
-                    strategy_emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
-
-                    # Color code P&L
-                    pnl_display = f"${trade.get('pnl', 0):+.2f}" if 'pnl' in trade else '-'
-                    if trade.get('pnl', 0) > 0:
-                        pnl_display = f"🟢 {pnl_display}"
-                    elif trade.get('pnl', 0) < 0:
-                        pnl_display = f"🔴 {pnl_display}"
-
-                    enhanced_trades.append({
-                        'Date': trade['date'].strftime('%m/%d'),
-                        'Time': trade['time'],
-                        'Action': f"{strategy_emoji} {trade['action']}",
-                        'Symbol': trade['symbol'],
-                        'Price': f"${trade['price']:.2f}",
-                        'Shares': f"{trade['shares']:,}",
-                        'P&L': pnl_display,
-                        'Strategy': strategy.replace('_', ' ').title(),
-                        'Balance': f"${trade['balance']:,.0f}"
-                    })
-
-                df = pd.DataFrame(enhanced_trades)
-                df = df.iloc[::-1]  # Most recent first
-                st.dataframe(df, use_container_width=True)
-
-                # Trading Statistics
-                st.markdown("### 📈 Trading Statistics")
-                today_trades = [t for t in bot.trades_log if t.get('date') == datetime.now().date()]
-                week_trades = [t for t in bot.trades_log if (datetime.now().date() - t.get('date', datetime.now().date())).days <= 7]
-
-                col1, col2, col3, col4 = st.columns(4)
-
-                with col1:
-                    buys = [t for t in today_trades if t['action'] == 'BUY']
-                    sells = [t for t in today_trades if t['action'].startswith('SELL')]
-                    st.metric("Today's Activity", f"{len(buys)}B / {len(sells)}S")
-
-                with col2:
-                    today_pnl = sum(t.get('pnl', 0) for t in today_trades if 'pnl' in t)
-                    st.metric("Today's Realized P&L", f"${today_pnl:+.2f}")
-
-                with col3:
-                    successful_sells = [t for t in sells if t.get('pnl', 0) > 0]
-                    success_rate = (len(successful_sells) / len(sells) * 100) if sells else 0
-                    st.metric("Today's Success Rate", f"{success_rate:.0f}%")
-
-                with col4:
-                    week_pnl = sum(t.get('pnl', 0) for t in week_trades if 'pnl' in t)
-                    st.metric("7-Day P&L", f"${week_pnl:+.2f}")
-
-            else:
-                st.info("📊 No trades executed yet - Ready for opportunities!")
-
-        with tab4:
-            st.subheader("🔍 Near Miss Analysis & Optimization")
-
-            if bot.near_miss_log:
-                st.markdown(f"**📊 Tracking {len(bot.near_miss_log)} missed opportunities** (Max: {MAX_NEAR_MISS_LOG})")
-
-                # Sort by volume ratio (most promising first)
-                sorted_misses = sorted(list(bot.near_miss_log),
-                                      key=lambda x: x['metrics']['volume_ratio'], reverse=True)
-
-                # Top missed opportunities
-                st.markdown("### 🎯 Top Missed Opportunities")
-                for i, miss in enumerate(sorted_misses[:6], 1):
-                    with st.expander(f"#{i} {miss['symbol']} ({miss['strategy'].title()}) - {miss['missed_reason']}"):
-                        col1, col2, col3 = st.columns(3)
-
-                        with col1:
-                            st.markdown("**📊 Price Action**")
-                            st.metric("Price Change", f"{miss['metrics']['price_change']:+.2%}")
-                            st.metric("Volume Multiplier", f"{miss['metrics']['volume_ratio']:.1f}x")
-
-                        with col2:
-                            st.markdown("**🔬 Technical Analysis**")
-                            st.metric("RSI Level", f"{miss['metrics']['rsi']:.1f}")
-                            st.metric("MACD Signal", f"{miss['metrics']['macd']:+.3f}")
-
-                        with col3:
-                            st.markdown("**❌ Rejection Analysis**")
-                            st.metric("VWAP Distance", f"{miss['metrics']['distance_from_vwap']:+.2%}")
-                            st.markdown(f"**Root Cause:** {miss['metrics']['why_rejected']}")
-
-                        # Timestamp
-                        st.caption(f"🕐 Identified: {miss['timestamp'].strftime('%H:%M:%S on %m/%d')}")
-
-                # Strategy breakdown
-                st.markdown("### 📊 Analysis by Strategy")
-                strategy_counts = {}
-                strategy_avg_volume = {}
-
-                for miss in bot.near_miss_log:
-                    strategy = miss['strategy']
-                    strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
-
-                    if strategy not in strategy_avg_volume:
-                        strategy_avg_volume[strategy] = []
-                    strategy_avg_volume[strategy].append(miss['metrics']['volume_ratio'])
-
-                if strategy_counts:
-                    col1, col2, col3 = st.columns(3)
-                    strategies = list(strategy_counts.keys())
-
-                    for i, strategy in enumerate(strategies[:3]):
-                        with [col1, col2, col3][i]:
-                            emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
-                            avg_vol = np.mean(strategy_avg_volume[strategy]) if strategy_avg_volume[strategy] else 0
-
-                            st.metric(f"{emoji} {strategy.title()}",
-                                    f"{strategy_counts[strategy]} misses",
-                                    delta=f"Avg Vol: {avg_vol:.1f}x")
-
-                # Common rejection patterns
-                st.markdown("### 🚫 Common Rejection Patterns")
-                rejection_counts = {}
-                for miss in bot.near_miss_log:
-                    reason = miss['missed_reason']
-                    rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
-
-                # Sort by frequency
-                sorted_reasons = sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
-
-                for i, (reason, count) in enumerate(sorted_reasons[:5], 1):
-                    st.markdown(f"**{i}.** {reason} - *{count} occurrences*")
-
-                # Optimization suggestions
-                st.markdown("### 💡 Optimization Opportunities")
-                if sorted_reasons:
-                    top_reason = sorted_reasons[0][0]
-                    if "Volume" in top_reason:
-                        st.info("💡 **Suggestion:** Consider lowering volume threshold during low-volatility periods")
-                    elif "ADX" in top_reason:
-                        st.info("💡 **Suggestion:** Implement dynamic ADX thresholds based on market regime")
-                    elif "VWAP" in top_reason:
-                        st.info("💡 **Suggestion:** Use intraday VWAP deviation bands for momentum entries")
-                    else:
-                        st.info("💡 **Suggestion:** Review strategy parameters for current market conditions")
-
-            else:
-                st.info("📊 Near-miss tracking begins during active market hours")
-
-                # Educational content
-                st.markdown("### 📚 What We Track")
-                st.markdown("""
-                **Near-miss candidates help optimize strategy performance:**
-
-                - **🎯 Partial Matches**: Stocks meeting some but not all criteria
-                - **⏰ Timing Issues**: Signals arriving too late in trading day
-                - **🛡️ Risk Filters**: Opportunities filtered by risk management
-                - **📏 Close Calls**: Within 0.5% of trigger thresholds
-
-                **Benefits:**
-                - Identify overlooked opportunities
-                - Fine-tune strategy parameters
-                - Improve entry timing
-                - Validate risk management effectiveness
-                """)
-
-        with tab5:
-            st.subheader("🤖 System Information & Configuration")
-
-            # System status
             col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Market Regime:** {regime_color} {stats['market_regime'].upper()}")
+            with col2:
+                st.markdown(f"**Active Strategies:** {', '.join(s.title() for s in active_strategies) if active_strategies else 'None'}")
+
+        else:
+            st.info("📊 Scanning for opportunities... Candidates refresh during market hours")
+
+            # Show strategy overview when no candidates
+            st.markdown("### 📚 Strategy Overview")
+            col1, col2, col3 = st.columns(3)
 
             with col1:
-                st.markdown("### 🔧 Technical Stack")
-                st.success("✅ Professional Technical Indicators (Custom Implementation)")
-                st.success("✅ Multi-Strategy Trading Engine")
-                st.success("✅ Advanced Risk Management")
-                st.success("✅ Near-Miss Analysis System")
-
-                if not ALPACA_API_KEY:
-                    st.info("📊 Enhanced Simulation Mode Active")
-                else:
-                    st.success("✅ Alpaca Paper Trading Connected")
-
-            with col2:
-                st.markdown("### 📊 Current Configuration")
-                st.markdown(f"""
-                - **Position Size**: {POSITION_SIZE:,} shares
-                - **Stop Loss**: {STOP_LOSS_PCT*100:.0f}%
-                - **Take Profit**: {TAKE_PROFIT_PCT*100:.0f}%
-                - **Daily Target**: {DAILY_PROFIT_TARGET_PCT*100:.0f}%
-                - **Daily Loss Limit**: {MAX_DAILY_LOSS_PCT*100:.0f}%
-                - **Max Positions**: {MAX_CONCURRENT_POSITIONS}
-                - **Volume Threshold**: {VOLUME_MULTIPLIER}x
-                - **Trading Cutoff**: {NO_TRADES_AFTER_HOUR}:00 PM ET
-                """)
-
-            # Strategy details
-            st.markdown("### 🎯 Multi-Strategy Framework")
-
-            strategy_col1, strategy_col2, strategy_col3 = st.columns(3)
-
-            with strategy_col1:
                 st.markdown("""
                 **🚀 Enhanced Momentum**
-                - Professional MACD analysis
-                - ADX trend confirmation (>25)
-                - VWAP positioning filter
-                - Volume surge validation (>2x)
-                - Stop: -2% | Target: +7%
+                - MACD positive & rising
+                - ADX > 25 (strong trend)
+                - Price above VWAP
+                - Volume > 2x average
+                - Breakout confirmation
                 """)
 
-            with strategy_col2:
-                enabled_text = "✅ **ENABLED**" if ENABLE_MEAN_REVERSION else "❌ **DISABLED**"
+            with col2:
+                enabled_status = "✅ Enabled" if ENABLE_MEAN_REVERSION else "❌ Disabled"
                 st.markdown(f"""
-                **🔄 Mean Reversion** {enabled_text}
-                - RSI(5) oversold detection (<30)
-                - Bollinger Band positioning
-                - Volume confirmation (>1.2x)
-                - Mean reversion target (middle band)
-                - Stop: -2% | Target: +7%
+                **🔄 Mean Reversion** {enabled_status}
+                - RSI(5) < 30 (oversold)
+                - Price < Lower Bollinger Band
+                - Volume > 1.2x average
+                - Counter-trend entry
                 """)
 
-            with strategy_col3:
+            with col3:
                 st.markdown("""
                 **💥 Opening Range Breakout**
-                - 30-minute range identification
-                - Breakout confirmation (+0.5%)
-                - Volume validation (>1.5x)
-                - Time-based restrictions
-                - Stop: -2% | Target: +7%
+                - Break 30-min high + 0.5%
+                - Volume confirmation >1.5x
+                - No trades after 3:00 PM
+                - Momentum follow-through
                 """)
 
-            # Risk management
-            st.markdown("### ⚙️ Risk Management Framework")
+    with tab3:
+        st.subheader("📜 Trade Log & Performance")
+        if bot.trades_log:
+            recent_trades = bot.trades_log[-12:]  # Show more trades
+            enhanced_trades = []
 
-            risk_col1, risk_col2 = st.columns(2)
+            for trade in recent_trades:
+                strategy = trade.get('strategy', 'unknown')
+                strategy_emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
 
-            with risk_col1:
-                st.markdown("""
-                **🛡️ Position-Level Risk**
-                - ATR-based position sizing (1% risk per trade)
-                - Maximum concurrent positions: 5
-                - Stop-loss: 2% per position
-                - Take-profit: 7% per position
-                """)
+                # Color code P&L
+                pnl_display = f"${trade.get('pnl', 0):+.2f}" if 'pnl' in trade else '-'
+                if trade.get('pnl', 0) > 0:
+                    pnl_display = f"🟢 {pnl_display}"
+                elif trade.get('pnl', 0) < 0:
+                    pnl_display = f"🔴 {pnl_display}"
 
-            with risk_col2:
-                st.markdown("""
-                **🎯 Portfolio-Level Risk**
-                - Daily profit target: 4% (auto-close all positions)
-                - Daily loss limit: 2% (circuit breaker)
-                - Consecutive loss protection (3 = 1hr pause)
-                - Time cutoff: No new trades after 3:00 PM
-                """)
+                enhanced_trades.append({
+                    'Date': trade['date'].strftime('%m/%d'),
+                    'Time': trade['time'],
+                    'Action': f"{strategy_emoji} {trade['action']}",
+                    'Symbol': trade['symbol'],
+                    'Price': f"${trade['price']:.2f}",
+                    'Shares': f"{trade['shares']:,}",
+                    'P&L': pnl_display,
+                    'Strategy': strategy.replace('_', ' ').title(),
+                    'Balance': f"${trade['balance']:,.0f}"
+                })
 
-            # Performance metrics
-            st.markdown("### 📈 System Performance")
+            df = pd.DataFrame(enhanced_trades)
+            df = df.iloc[::-1]  # Most recent first
+            st.dataframe(df, use_container_width=True)
 
-            perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+            # Trading Statistics
+            st.markdown("### 📈 Trading Statistics")
+            today_trades = [t for t in bot.trades_log if t.get('date') == datetime.now().date()]
+            week_trades = [t for t in bot.trades_log if (datetime.now().date() - t.get('date', datetime.now().date())).days <= 7]
 
-            with perf_col1:
-                st.metric("Technical Indicators", "6 Professional")
-                st.caption("RSI, MACD, BB, ADX, ATR, VWAP")
+            col1, col2, col3, col4 = st.columns(4)
 
-            with perf_col2:
-                st.metric("Strategy Coverage", "3 Strategies")
-                st.caption("Momentum, Mean Reversion, Breakout")
+            with col1:
+                buys = [t for t in today_trades if t['action'] == 'BUY']
+                sells = [t for t in today_trades if t['action'].startswith('SELL')]
+                st.metric("Today's Activity", f"{len(buys)}B / {len(sells)}S")
 
-            with perf_col3:
-                st.metric("Risk Controls", "4 Layers")
-                st.caption("Position, Daily, Sequential, Time")
+            with col2:
+                today_pnl = sum(t.get('pnl', 0) for t in today_trades if 'pnl' in t)
+                st.metric("Today's Realized P&L", f"${today_pnl:+.2f}")
 
-            with perf_col4:
-                st.metric("Analysis Tools", "Near-Miss Tracking")
-                st.caption(f"Up to {MAX_NEAR_MISS_LOG} opportunities")
+            with col3:
+                successful_sells = [t for t in sells if t.get('pnl', 0) > 0]
+                success_rate = (len(successful_sells) / len(sells) * 100) if sells else 0
+                st.metric("Today's Success Rate", f"{success_rate:.0f}%")
 
-            # Footer
-            st.markdown("---")
-            st.markdown("### 🚨 Important Disclaimers")
+            with col4:
+                week_pnl = sum(t.get('pnl', 0) for t in week_trades if 'pnl' in t)
+                st.metric("7-Day P&L", f"${week_pnl:+.2f}")
 
-            disclaimer_col1, disclaimer_col2 = st.columns(2)
+        else:
+            st.info("📊 No trades executed yet - Ready for opportunities!")
 
-            with disclaimer_col1:
-                st.warning("""
-                **⚠️ Paper Trading Only**
-                - Uses Alpaca Paper Trading API
-                - No real money at risk
-                - Educational/demonstration purposes
-                - Results are simulated
-                """)
+    with tab4:
+        st.subheader("🔍 Near Miss Analysis & Optimization")
 
-            with disclaimer_col2:
-                st.info("""
-                **🔬 Technical Implementation**
-                - Professional-grade indicators
-                - Institutional risk management
-                - Real-time strategy optimization
-                - Advanced analytics suite
-                """)
+        if bot.near_miss_log:
+            st.markdown(f"**📊 Tracking {len(bot.near_miss_log)} missed opportunities** (Max: {MAX_NEAR_MISS_LOG})")
 
-        # Auto-refresh functionality
-        st.markdown(
-            """
-            <script>
-            setTimeout(function(){
-                window.location.reload();
-            }, 30000);
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
+            # Sort by volume ratio (most promising first)
+            sorted_misses = sorted(list(bot.near_miss_log),
+                                  key=lambda x: x['metrics']['volume_ratio'], reverse=True)
 
-        # Footer with system info
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
+            # Top missed opportunities
+            st.markdown("### 🎯 Top Missed Opportunities")
+            for i, miss in enumerate(sorted_misses[:6], 1):
+                with st.expander(f"#{i} {miss['symbol']} ({miss['strategy'].title()}) - {miss['missed_reason']}"):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.markdown("**📊 Price Action**")
+                        st.metric("Price Change", f"{miss['metrics']['price_change']:+.2%}")
+                        st.metric("Volume Multiplier", f"{miss['metrics']['volume_ratio']:.1f}x")
+
+                    with col2:
+                        st.markdown("**🔬 Technical Analysis**")
+                        st.metric("RSI Level", f"{miss['metrics']['rsi']:.1f}")
+                        st.metric("MACD Signal", f"{miss['metrics']['macd']:+.3f}")
+
+                    with col3:
+                        st.markdown("**❌ Rejection Analysis**")
+                        st.metric("VWAP Distance", f"{miss['metrics']['distance_from_vwap']:+.2%}")
+                        st.markdown(f"**Root Cause:** {miss['metrics']['why_rejected']}")
+
+                    # Timestamp
+                    st.caption(f"🕐 Identified: {miss['timestamp'].strftime('%H:%M:%S on %m/%d')}")
+
+            # Strategy breakdown
+            st.markdown("### 📊 Analysis by Strategy")
+            strategy_counts = {}
+            strategy_avg_volume = {}
+
+            for miss in bot.near_miss_log:
+                strategy = miss['strategy']
+                strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+                if strategy not in strategy_avg_volume:
+                    strategy_avg_volume[strategy] = []
+                strategy_avg_volume[strategy].append(miss['metrics']['volume_ratio'])
+
+            if strategy_counts:
+                col1, col2, col3 = st.columns(3)
+                strategies = list(strategy_counts.keys())
+
+                for i, strategy in enumerate(strategies[:3]):
+                    with [col1, col2, col3][i]:
+                        emoji = {"momentum": "🚀", "mean_reversion": "🔄", "breakout": "💥"}.get(strategy, "📈")
+                        avg_vol = np.mean(strategy_avg_volume[strategy]) if strategy_avg_volume[strategy] else 0
+
+                        st.metric(f"{emoji} {strategy.title()}",
+                                f"{strategy_counts[strategy]} misses",
+                                delta=f"Avg Vol: {avg_vol:.1f}x")
+
+            # Common rejection patterns
+            st.markdown("### 🚫 Common Rejection Patterns")
+            rejection_counts = {}
+            for miss in bot.near_miss_log:
+                reason = miss['missed_reason']
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+            # Sort by frequency
+            sorted_reasons = sorted(rejection_counts.items(), key=lambda x: x[1], reverse=True)
+
+            for i, (reason, count) in enumerate(sorted_reasons[:5], 1):
+                st.markdown(f"**{i}.** {reason} - *{count} occurrences*")
+
+            # Optimization suggestions
+            st.markdown("### 💡 Optimization Opportunities")
+            if sorted_reasons:
+                top_reason = sorted_reasons[0][0]
+                if "Volume" in top_reason:
+                    st.info("💡 **Suggestion:** Consider lowering volume threshold during low-volatility periods")
+                elif "ADX" in top_reason:
+                    st.info("💡 **Suggestion:** Implement dynamic ADX thresholds based on market regime")
+                elif "VWAP" in top_reason:
+                    st.info("💡 **Suggestion:** Use intraday VWAP deviation bands for momentum entries")
+                else:
+                    st.info("💡 **Suggestion:** Review strategy parameters for current market conditions")
+
+        else:
+            st.info("📊 Near-miss tracking begins during active market hours")
+
+            # Educational content
+            st.markdown("### 📚 What We Track")
+            st.markdown("""
+            **Near-miss candidates help optimize strategy performance:**
+
+            - **🎯 Partial Matches**: Stocks meeting some but not all criteria
+            - **⏰ Timing Issues**: Signals arriving too late in trading day
+            - **🛡️ Risk Filters**: Opportunities filtered by risk management
+            - **📏 Close Calls**: Within 0.5% of trigger thresholds
+
+            **Benefits:**
+            - Identify overlooked opportunities
+            - Fine-tune strategy parameters
+            - Improve entry timing
+            - Validate risk management effectiveness
+            """)
+
+    with tab5:
+        st.subheader("🤖 System Information & Configuration")
+
+        # System status
+        col1, col2 = st.columns(2)
 
         with col1:
-            st.caption(f"🕐 Last Updated: {datetime.now().strftime('%H:%M:%S')}")
+            st.markdown("### 🔧 Technical Stack")
+            st.success("✅ Professional Technical Indicators (Custom Implementation)")
+            st.success("✅ Multi-Strategy Trading Engine")
+            st.success("✅ Advanced Risk Management")
+            st.success("✅ Near-Miss Analysis System")
+
+            if not ALPACA_API_KEY:
+                st.info("📊 Enhanced Simulation Mode Active")
+            else:
+                st.success("✅ Alpaca Paper Trading Connected")
+
         with col2:
-            st.caption("🔄 Auto-refresh: 30 seconds")
-        with col3:
-            st.caption("🚀 Enhanced Multi-Strategy Bot v2.0")
+            st.markdown("### 📊 Current Configuration")
+            st.markdown(f"""
+            - **Position Size**: {POSITION_SIZE:,} shares
+            - **Stop Loss**: {STOP_LOSS_PCT*100:.0f}%
+            - **Take Profit**: {TAKE_PROFIT_PCT*100:.0f}%
+            - **Daily Target**: {DAILY_PROFIT_TARGET_PCT*100:.0f}%
+            - **Daily Loss Limit**: {MAX_DAILY_LOSS_PCT*100:.0f}%
+            - **Max Positions**: {MAX_CONCURRENT_POSITIONS}
+            - **Volume Threshold**: {VOLUME_MULTIPLIER}x
+            - **Trading Cutoff**: {NO_TRADES_AFTER_HOUR}:00 PM ET
+            """)
+
+        # Strategy details
+        st.markdown("### 🎯 Multi-Strategy Framework")
+
+        strategy_col1, strategy_col2, strategy_col3 = st.columns(3)
+
+        with strategy_col1:
+            st.markdown("""
+            **🚀 Enhanced Momentum**
+            - Professional MACD analysis
+            - ADX trend confirmation (>25)
+            - VWAP positioning filter
+            - Volume surge validation (>2x)
+            - Stop: -2% | Target: +7%
+            """)
+
+        with strategy_col2:
+            enabled_text = "✅ **ENABLED**" if ENABLE_MEAN_REVERSION else "❌ **DISABLED**"
+            st.markdown(f"""
+            **🔄 Mean Reversion** {enabled_text}
+            - RSI(5) oversold detection (<30)
+            - Bollinger Band positioning
+            - Volume confirmation (>1.2x)
+            - Mean reversion target (middle band)
+            - Stop: -2% | Target: +7%
+            """)
+
+        with strategy_col3:
+            st.markdown("""
+            **💥 Opening Range Breakout**
+            - 30-minute range identification
+            - Breakout confirmation (+0.5%)
+            - Volume validation (>1.5x)
+            - Time-based restrictions
+            - Stop: -2% | Target: +7%
+            """)
+
+        # Risk management
+        st.markdown("### ⚙️ Risk Management Framework")
+
+        risk_col1, risk_col2 = st.columns(2)
+
+        with risk_col1:
+            st.markdown("""
+            **🛡️ Position-Level Risk**
+            - ATR-based position sizing (1% risk per trade)
+            - Maximum concurrent positions: 5
+            - Stop-loss: 2% per position
+            - Take-profit: 7% per position
+            """)
+
+        with risk_col2:
+            st.markdown("""
+            **🎯 Portfolio-Level Risk**
+            - Daily profit target: 4% (auto-close all positions)
+            - Daily loss limit: 2% (circuit breaker)
+            - Consecutive loss protection (3 = 1hr pause)
+            - Time cutoff: No new trades after 3:00 PM
+            """)
+
+        # Performance metrics
+        st.markdown("### 📈 System Performance")
+
+        perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+
+        with perf_col1:
+            st.metric("Technical Indicators", "6 Professional")
+            st.caption("RSI, MACD, BB, ADX, ATR, VWAP")
+
+        with perf_col2:
+            st.metric("Strategy Coverage", "3 Strategies")
+            st.caption("Momentum, Mean Reversion, Breakout")
+
+        with perf_col3:
+            st.metric("Risk Controls", "4 Layers")
+            st.caption("Position, Daily, Sequential, Time")
+
+        with perf_col4:
+            st.metric("Analysis Tools", "Near-Miss Tracking")
+            st.caption(f"Up to {MAX_NEAR_MISS_LOG} opportunities")
+
+        # Footer
+        st.markdown("---")
+        st.markdown("### 🚨 Important Disclaimers")
+
+        disclaimer_col1, disclaimer_col2 = st.columns(2)
+
+        with disclaimer_col1:
+            st.warning("""
+            **⚠️ Paper Trading Only**
+            - Uses Alpaca Paper Trading API
+            - No real money at risk
+            - Educational/demonstration purposes
+            - Results are simulated
+            """)
+
+        with disclaimer_col2:
+            st.info("""
+            **🔬 Technical Implementation**
+            - Professional-grade indicators
+            - Institutional risk management
+            - Real-time strategy optimization
+            - Advanced analytics suite
+            """)
+
+    # Auto-refresh functionality
+    st.markdown(
+        """
+        <script>
+        setTimeout(function(){
+            window.location.reload();
+        }, 30000);
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Footer with system info
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.caption(f"🕐 Last Updated: {datetime.now().strftime('%H:%M:%S')}")
+    with col2:
+        st.caption("🔄 Auto-refresh: 30 seconds")
+    with col3:
+        st.caption("🚀 Enhanced Multi-Strategy Bot v2.0")
