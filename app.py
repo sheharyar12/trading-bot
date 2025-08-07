@@ -137,7 +137,7 @@ class EnhancedTradingBot:
         self.initial_balance = 100000.0
         self.daily_starting_balance = 100000.0
 
-        self.market_data = SimulatedMarketData()
+        self.market_data = SimulatedMarketData()  # Only used in simulation mode
         self.near_miss_log = deque(maxlen=MAX_NEAR_MISS_LOG)
         self.all_candidates = {'momentum': [], 'mean_reversion': [], 'breakout': []}
         self.market_regime = "neutral"
@@ -164,7 +164,7 @@ class EnhancedTradingBot:
                 self.initial_balance = float(account.equity)
                 self.is_simulation = False
                 self.status = "LIVE TRADING - CONNECTED TO ALPACA"
-                logger.info("Connected to Alpaca successfully. Live trading mode.")
+                logger.info("🔥 LIVE TRADING MODE: Connected to Alpaca successfully. Real money at risk!")
             except Exception as e:
                 self.api = None
                 self.is_simulation = True
@@ -408,9 +408,30 @@ class EnhancedTradingBot:
                     'balance': self.account_balance,
                     'strategy': 'unknown'
                 })
+            
+            # Initialize candidates with real data in live mode
+            self.all_candidates = {
+                'momentum': self.get_real_market_candidates('momentum'),
+                'mean_reversion': self.get_real_market_candidates('mean_reversion') if ENABLE_MEAN_REVERSION else [],
+                'breakout': self.get_real_market_candidates('breakout')
+            }
         except Exception as e:
             logger.error(f"Failed to fetch live data from Alpaca: {e}")
 
+    def get_real_market_candidates(self, strategy):
+        """Get real market data candidates from Alpaca instead of simulated data"""
+        if self.is_simulation or not self.api:
+            return self.market_data.get_candidates_by_strategy(strategy)
+        
+        try:
+            # In live mode, you would implement real market screening here using Alpaca's market data API
+            # For now, return empty list to avoid using simulated data
+            # You would typically use self.api.get_bars(), get_quotes(), etc.
+            logger.info(f"Live mode: Real market screening for {strategy} strategy should be implemented here")
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching real market data for {strategy}: {e}")
+            return []
 
     def get_stats(self):
         open_positions = sum(1 for p in self.positions.values() if p['status'] == 'OPEN' or p['status'] == 'LONG' or p['status'] == 'SHORT')
@@ -697,9 +718,9 @@ if __name__ == "__main__":
 
         def refresh_candidates():
             st.session_state['all_candidates'] = {
-                'momentum': bot.market_data.get_candidates_by_strategy('momentum'),
-                'mean_reversion': bot.market_data.get_candidates_by_strategy('mean_reversion') if ENABLE_MEAN_REVERSION else [],
-                'breakout': bot.market_data.get_candidates_by_strategy('breakout')
+                'momentum': bot.get_real_market_candidates('momentum'),
+                'mean_reversion': bot.get_real_market_candidates('mean_reversion') if ENABLE_MEAN_REVERSION else [],
+                'breakout': bot.get_real_market_candidates('breakout')
             }
             st.session_state['last_candidate_refresh'] = time.time()
 
