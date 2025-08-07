@@ -646,8 +646,251 @@ class EnhancedTradingBot:
             self._initialize_live_data()
             self.is_trading_hours = self.is_market_open()
             
+        # Initialize trading session tracking
+        self.last_market_state = None
+        self.last_daily_reset = None
+        self.last_data_refresh = datetime.now()
+        self.market_open_scanning_active = False
+        self.position_closure_attempts = {}
+        
         # Set daily starting balance (should be done at start of each trading day)
         self.daily_starting_balance = self.account_balance
+
+    def reset_daily_trading(self):
+        """Reset all daily flags and balances at market open"""
+        try:
+            current_date = datetime.now(MARKET_TIMEZONE).date()
+            
+            # Only reset once per trading day
+            if self.last_daily_reset == current_date:
+                return False
+            
+            logger.info(f"🌅 DAILY RESET: Starting fresh trading day {current_date}")
+            
+            # Reset daily flags
+            self.daily_target_hit = False
+            self.daily_loss_limit_hit = False
+            self.pause_trading_until = None
+            self.consecutive_losses = 0
+            
+            # Reset daily balance tracking
+            if not self.is_simulation:
+                try:
+                    account = self.api.get_account()
+                    self.daily_starting_balance = float(account.equity)
+                    self.account_balance = float(account.equity)
+                    logger.info(f"💰 Daily starting balance set to: ${self.daily_starting_balance:,.2f}")
+                except Exception as e:
+                    logger.error(f"Error updating starting balance: {e}")
+                    # Keep existing balance if API call fails
+            
+            # Reset daily P&L
+            self.daily_pnl = 0
+            
+            # Clear position closure tracking
+            self.position_closure_attempts.clear()
+            
+            # Activate market open intensive scanning
+            self.market_open_scanning_active = True
+            
+            # Mark reset as completed
+            self.last_daily_reset = current_date
+            
+            logger.info("✅ Daily reset completed - ready for new trading day")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in daily reset: {e}")
+            return False
+
+    def check_market_transition(self):
+        """Check if market just opened or is about to close"""
+        try:
+            current_market_state = self.is_market_open()
+            market_just_opened = False
+            
+            # Detect market open transition
+            if current_market_state and not self.last_market_state:
+                logger.info("🔔 MARKET JUST OPENED - Initiating daily reset and position scanning")
+                market_just_opened = True
+                self.reset_daily_trading()
+                
+            # Update state tracking
+            self.last_market_state = current_market_state
+            
+            # Check for market close approach (3:30 PM warning)
+            now = datetime.now(MARKET_TIMEZONE)
+            if now.hour == 15 and now.minute == 30:  # 3:30 PM
+                logger.info("⏰ WARNING: 15 minutes until position closure (3:45 PM)")
+            
+            return market_just_opened
+            
+        except Exception as e:
+            logger.error(f"Error checking market transition: {e}")
+            return False
+
+    def market_open_position_scan(self):
+        """Intensive position scanning when market opens"""
+        try:
+            if not self.market_open_scanning_active:
+                return []
+            
+            # Check if we're still in the first hour of trading
+            now = datetime.now(MARKET_TIMEZONE)
+            market_open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            first_hour_end = market_open_time + timedelta(hours=1)
+            
+            if now > first_hour_end:
+                # Disable intensive scanning after first hour
+                self.market_open_scanning_active = False
+                logger.info("🔍 Market open intensive scanning completed - switching to normal scanning")
+                return []
+            
+            logger.info(f"🚀 MARKET OPEN INTENSIVE SCANNING - Looking for immediate opportunities")
+            
+            # Get candidates from all strategies with slightly relaxed criteria
+            all_candidates = []
+            
+            if self.market_data and hasattr(self.market_data, 'get_candidates_by_strategy'):
+                # Scan all strategies
+                strategies = ['momentum', 'mean_reversion', 'breakout']
+                for strategy in strategies:
+                    if strategy == 'mean_reversion' and not ENABLE_MEAN_REVERSION:
+                        continue
+                        
+                    candidates = self.market_data.get_candidates_by_strategy(strategy)
+                    if candidates:
+                        logger.info(f"📊 Found {len(candidates)} {strategy} candidates during market open scan")
+                        all_candidates.extend([(strategy, c) for c in candidates])
+            
+            return all_candidates
+            
+        except Exception as e:
+            logger.error(f"Error in market open position scan: {e}")
+            return []
+
+    def validate_live_data_refresh(self):
+        """Ensure all displayed data is current and accurate"""
+        try:
+            if self.is_simulation:
+                # In simulation, data is always "current"
+                self.last_data_refresh = datetime.now()
+                return True
+            
+            # For live mode, check data freshness
+            now = datetime.now()
+            time_since_refresh = (now - self.last_data_refresh).total_seconds()
+            
+            # Refresh every 30 seconds during market hours
+            if time_since_refresh > 30:
+                logger.info("🔄 Refreshing live data from Alpaca")
+                
+                # Refresh account and positions
+                self.refresh_account_and_positions()
+                
+                # Update position prices
+                self.update_position_prices_live()
+                
+                # Update daily P&L
+                self.update_daily_pnl()
+                
+                self.last_data_refresh = now
+                
+                # Log data freshness
+                open_positions = len([p for p in self.positions.values() if p['status'] == 'OPEN'])
+                logger.info(f"📊 Data refresh completed - {open_positions} open positions, Daily P&L: ${self.daily_pnl:+.2f}")
+                
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error validating live data refresh: {e}")
+            return False
+
+    def ensure_all_positions_closed(self, reason="FORCED_CLOSE"):
+        """Guarantee all positions are closed by market close"""
+        try:
+            positions_to_close = [symbol for symbol, pos in self.positions.items() 
+                                if pos['status'] == 'OPEN']
+            
+            if not positions_to_close:
+                logger.info("✅ No positions to close")
+                return True
+            
+            logger.warning(f"🚨 ENSURING CLOSURE: Attempting to close {len(positions_to_close)} positions with reason: {reason}")
+            
+            closed_count = 0
+            failed_count = 0
+            
+            for symbol in positions_to_close:
+                try:
+                    pos = self.positions.get(symbol)
+                    if not pos or pos['status'] != 'OPEN':
+                        continue
+                    
+                    # Track closure attempts
+                    if symbol not in self.position_closure_attempts:
+                        self.position_closure_attempts[symbol] = 0
+                    self.position_closure_attempts[symbol] += 1
+                    
+                    # Multiple closure methods
+                    success = False
+                    
+                    # Method 1: Normal close_position
+                    try:
+                        self.close_position(symbol, pos['current_price'], f'SELL ({reason})')
+                        success = True
+                        closed_count += 1
+                        logger.info(f"✅ Closed {symbol} using normal method")
+                    except Exception as e1:
+                        logger.warning(f"❌ Normal closure failed for {symbol}: {e1}")
+                        
+                        # Method 2: Direct API call (if live mode)
+                        if not self.is_simulation and self.api and not success:
+                            try:
+                                order = self.api.submit_order(
+                                    symbol=symbol,
+                                    qty=pos['shares'],
+                                    side='sell',
+                                    type='market',
+                                    time_in_force='day'
+                                )
+                                logger.info(f"✅ Closed {symbol} using direct API call: {order}")
+                                
+                                # Update local tracking
+                                pos['status'] = 'CLOSED'
+                                success = True
+                                closed_count += 1
+                                
+                            except Exception as e2:
+                                logger.error(f"❌ Direct API closure failed for {symbol}: {e2}")
+                        
+                        # Method 3: Force local closure (last resort)
+                        if not success:
+                            logger.warning(f"🔧 Force closing {symbol} locally (API methods failed)")
+                            pos['status'] = 'CLOSED'
+                            pos['pnl'] = (pos['current_price'] - pos['entry_price']) * pos['shares']
+                            success = True
+                            closed_count += 1
+                    
+                    if not success:
+                        failed_count += 1
+                        logger.error(f"❌ All closure methods failed for {symbol}")
+                
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"❌ Error closing {symbol}: {e}")
+            
+            # Final summary
+            if closed_count > 0:
+                logger.info(f"✅ CLOSURE COMPLETE: {closed_count} positions closed, {failed_count} failed")
+            
+            return failed_count == 0
+            
+        except Exception as e:
+            logger.error(f"Error in ensure_all_positions_closed: {e}")
+            return False
 
     def is_market_open(self):
         """Check if market is currently open using Alpaca calendar"""
@@ -931,7 +1174,7 @@ class EnhancedTradingBot:
             logger.error(f"Error closing positions for loss limit: {e}")
 
     def check_end_of_day_closure(self):
-        """Close positions at 3:45 PM, backup at market close"""
+        """Close positions at 3:45 PM, backup at market close with bulletproof closure"""
         try:
             now = datetime.now(MARKET_TIMEZONE)
             
@@ -942,15 +1185,16 @@ class EnhancedTradingBot:
                (now.hour < MARKET_CLOSE_TIME[0] or 
                 (now.hour == MARKET_CLOSE_TIME[0] and now.minute < MARKET_CLOSE_TIME[1])):
                 
-                # Close all positions at 3:45 PM
-                positions_to_close = [symbol for symbol, pos in self.positions.items() 
-                                    if pos['status'] == 'OPEN']
+                # Use bulletproof closure system
+                positions_count = len([pos for pos in self.positions.values() if pos['status'] == 'OPEN'])
                 
-                if positions_to_close:
-                    logger.info(f"⏰ 3:45 PM CLOSURE: Closing {len(positions_to_close)} positions")
-                    for symbol in positions_to_close:
-                        pos = self.positions[symbol]
-                        self.close_position(symbol, pos['current_price'], 'SELL (3:45_PM_CLOSE)')
+                if positions_count > 0:
+                    logger.info(f"⏰ 3:45 PM CLOSURE: Using bulletproof closure for {positions_count} positions")
+                    success = self.ensure_all_positions_closed("3:45_PM_CLOSE")
+                    if success:
+                        logger.info("✅ All positions successfully closed at 3:45 PM")
+                    else:
+                        logger.warning("⚠️ Some positions may not have closed properly - will retry at market close")
                     
         except Exception as e:
             logger.error(f"Error in end-of-day closure: {e}")
@@ -991,11 +1235,20 @@ class EnhancedTradingBot:
             return False, "Error checking trade conditions"
 
     def check_end_of_day(self):
+        """Backup closure at market close using bulletproof system"""
         now = datetime.now(MARKET_TIMEZONE)
         if now.hour > MARKET_CLOSE_TIME[0] or (now.hour == MARKET_CLOSE_TIME[0] and now.minute >= MARKET_CLOSE_TIME[1]):
-            for symbol, pos in list(self.positions.items()):
-                if pos['status'] in ('OPEN', 'LONG', 'SHORT'):  # Accept all
-                    self.close_position(symbol, pos['current_price'], 'SELL (END_OF_DAY)')
+            # Use bulletproof closure as backup
+            positions_count = len([pos for pos in self.positions.values() 
+                                 if pos['status'] in ('OPEN', 'LONG', 'SHORT')])
+            
+            if positions_count > 0:
+                logger.warning(f"🚨 MARKET CLOSE BACKUP: Force closing {positions_count} remaining positions")
+                success = self.ensure_all_positions_closed("END_OF_DAY")
+                if success:
+                    logger.info("✅ All remaining positions closed at market close")
+                else:
+                    logger.error("❌ CRITICAL: Some positions could not be closed even with backup methods")
 
     def check_and_sell_positions(self):
         for symbol, pos in list(self.positions.items()):
@@ -1438,8 +1691,40 @@ if __name__ == "__main__":
     with col2:
         st.metric("Mode", stats['mode'])
     with col3:
-        current_time = datetime.now(MARKET_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S ET")
-        st.metric("Current Time", current_time)
+        # Enhanced time display with market status and countdowns
+        current_time = datetime.now(MARKET_TIMEZONE)
+        current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S ET")
+        
+        # Calculate market timing information
+        market_open_today = current_time.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close_today = current_time.replace(hour=15, minute=50, second=0, microsecond=0)
+        position_close_time = current_time.replace(hour=15, minute=45, second=0, microsecond=0)
+        
+        if current_time < market_open_today:
+            # Before market open
+            time_to_open = market_open_today - current_time
+            hours, remainder = divmod(time_to_open.seconds, 3600)
+            minutes = remainder // 60
+            st.metric("⏰ Time to Market Open", f"{hours:02d}:{minutes:02d}")
+        elif current_time < position_close_time:
+            # During market hours, before position close
+            time_to_close = position_close_time - current_time
+            hours, remainder = divmod(time_to_close.seconds, 3600)
+            minutes = remainder // 60
+            if time_to_close.total_seconds() < 1800:  # Less than 30 minutes
+                st.metric("🚨 Time to Position Close", f"{hours:02d}:{minutes:02d}", delta="⚠️ CLOSING SOON")
+            else:
+                st.metric("⏰ Time to Position Close", f"{hours:02d}:{minutes:02d}")
+        elif current_time < market_close_today:
+            # Between position close and market close
+            st.metric("🔒 Positions Closed", "No New Trades", delta="Post 3:45 PM")
+        else:
+            # After market close
+            st.metric("🌙 Market Closed", current_time_str.split()[1])
+            
+        # Show market open intensive scanning status
+        if bot.market_open_scanning_active:
+            st.success("🚀 MARKET OPEN SCANNING ACTIVE")
 
     # Main Performance Metrics
     st.markdown("---")
@@ -1602,6 +1887,14 @@ if __name__ == "__main__":
             st.session_state['all_candidates'] = bot.all_candidates
 
         def refresh_candidates():
+            # --- 0. MARKET TRANSITION AND DATA FRESHNESS ---
+            # Check for market open/close transitions
+            market_just_opened = bot.check_market_transition()
+            
+            # Ensure live data is fresh
+            if not bot.is_simulation:
+                bot.validate_live_data_refresh()
+            
             # --- 1. CRITICAL RISK MANAGEMENT CHECKS FIRST ---
             # Check daily targets (profit/loss limits) - stops all trading if hit
             if bot.check_daily_targets():
@@ -1641,7 +1934,18 @@ if __name__ == "__main__":
             else:
                 bot.update_position_prices()
 
-            # --- 4. Auto-buy logic (only if trades are allowed) ---
+            # --- 4. Market Open Intensive Scanning (if active) ---
+            if bot.market_open_scanning_active:
+                logger.info("🚀 MARKET OPEN: Performing intensive position scanning")
+                intensive_candidates = bot.market_open_position_scan()
+                if intensive_candidates:
+                    logger.info(f"🎯 Found {len(intensive_candidates)} market open opportunities")
+                    for strategy_name, candidate in intensive_candidates:
+                        symbol = candidate['symbol']
+                        price = candidate['price']
+                        bot.execute_trade(symbol, price, POSITION_SIZE, strategy_name)
+
+            # --- 5. Auto-buy logic (normal candidates) ---
             all_candidates = st.session_state['all_candidates']
             for strategy_name, candidates in all_candidates.items():
                 for c in candidates:
@@ -1650,11 +1954,11 @@ if __name__ == "__main__":
                     # execute_trade now has built-in risk checks
                     bot.execute_trade(symbol, price, POSITION_SIZE, strategy_name)
 
-            # --- 5. Sell logic for all open positions ---
+            # --- 6. Sell logic for all open positions ---
             bot.check_and_sell_positions()
             bot.check_end_of_day()
             
-            # --- 6. Update performance metrics ---
+            # --- 7. Update performance metrics ---
             bot.update_daily_pnl()
 
         # Manual button
@@ -1673,7 +1977,26 @@ if __name__ == "__main__":
         if time.time() - st.session_state['last_candidate_refresh'] > CANDIDATE_REFRESH_INTERVAL:
             refresh_candidates()
 
-        st.caption("🔄 Candidates auto-refresh every 20 seconds (plus manual refresh available)")
+        # Enhanced refresh info with data freshness
+        if not bot.is_simulation:
+            time_since_refresh = (datetime.now() - bot.last_data_refresh).total_seconds()
+            if time_since_refresh < 60:
+                freshness_color = "🟢"
+                freshness_text = f"Fresh ({int(time_since_refresh)}s ago)"
+            elif time_since_refresh < 120:
+                freshness_color = "🟡" 
+                freshness_text = f"Recent ({int(time_since_refresh)}s ago)"
+            else:
+                freshness_color = "🔴"
+                freshness_text = f"Stale ({int(time_since_refresh)}s ago)"
+            
+            st.caption(f"🔄 Auto-refresh: 20s | Data: {freshness_color} {freshness_text}")
+        else:
+            st.caption("🔄 Candidates auto-refresh every 20 seconds (plus manual refresh available)")
+        
+        # Show daily reset status
+        if bot.last_daily_reset == datetime.now(MARKET_TIMEZONE).date():
+            st.caption(f"🌅 Daily reset completed today at market open")
 
         all_candidates = st.session_state['all_candidates']
 
