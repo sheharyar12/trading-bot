@@ -395,6 +395,14 @@ class EnhancedTradingBot:
     """Enhanced trading bot with professional-grade multi-strategy support"""
 
     def __init__(self):
+
+        if not ALPACA_API_KEY:
+            st.info("📊 Enhanced Simulation Mode Active (ALPACA_API_KEY missing)")
+            logger.warning("Simulation mode: ALPACA_API_KEY missing.")
+        else:
+            st.success("✅ Connected to Alpaca Paper Trading API!")
+            logger.info("Live mode: Connected to Alpaca.")
+
         self.api = None
         self.positions = {}
         self.trades_log = []
