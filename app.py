@@ -193,16 +193,15 @@ class EnhancedTradingBot:
 
     def check_and_sell_positions(self):
         for symbol, pos in list(self.positions.items()):
-            # Simulate current price update (in real, update from live data)
-            current_price = pos['current_price']  # replace with latest price source!
-            stop_loss = pos['stop_loss']
-            take_profit = pos['take_profit']
+            current_price = pos['current_price']
+            stop_loss = pos.get('stop_loss')
+            take_profit = pos.get('take_profit')
 
-            # Example: Sell logic
+            # Only check sell if stop_loss/take_profit are set
             if pos['status'] == 'OPEN':
-                if current_price <= stop_loss:
+                if stop_loss is not None and current_price <= stop_loss:
                     self.close_position(symbol, current_price, 'SELL (STOP_LOSS)')
-                elif current_price >= take_profit:
+                elif take_profit is not None and current_price >= take_profit:
                     self.close_position(symbol, current_price, 'SELL (TAKE_PROFIT)')
                 # Optional: end of day logic, etc.
 
