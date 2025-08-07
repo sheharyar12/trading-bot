@@ -42,7 +42,7 @@ PUSHOVER_APP_TOKEN = st.secrets.get('PUSHOVER_APP_TOKEN', '')
 
 POSITION_SIZE = int(st.secrets.get('POSITION_SIZE', '100'))
 STOP_LOSS_PCT = float(st.secrets.get('STOP_LOSS_PCT', '0.02'))
-TAKE_PROFIT_PCT = float(st.secrets.get('TAKE_PROFIT_PCT', '0.07'))
+TAKE_PROFIT_PCT = float(st.secrets.get('TAKE_PROFIT_PCT', '0.03'))
 VOLUME_MULTIPLIER = float(st.secrets.get('VOLUME_MULTIPLIER', '2.0'))
 MIN_PRICE_CHANGE_PCT = float(st.secrets.get('MIN_PRICE_CHANGE_PCT', '0.05'))
 
@@ -208,12 +208,27 @@ class EnhancedTradingBot:
 
     def close_position(self, symbol, exit_price, action):
         pos = self.positions[symbol]
+        # --- Alpaca SELL order ---
+        if not self.is_simulation and self.api:
+            try:
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=pos['shares'],
+                    side='sell',
+                    type='market',
+                    time_in_force='day'
+                )
+                logger.info(f"Alpaca SELL order submitted: {order}")
+            except Exception as e:
+                logger.error(f"Failed to submit Alpaca SELL order: {e}")
+                # Optionally: return, raise, or still update state
+
+        # Always update local state for UI/tracking
         pos['status'] = 'CLOSED'
         pnl = (exit_price - pos['entry_price']) * pos['shares']
         pnl_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * 100
         pos['pnl'] = pnl
         pos['pnl_pct'] = pnl_pct
-        # Add to trades log
         self.trades_log.append({
             'date': datetime.now().date(),
             'time': datetime.now().strftime("%H:%M:%S"),
@@ -225,7 +240,6 @@ class EnhancedTradingBot:
             'balance': self.account_balance + pnl,
             'strategy': pos['strategy']
         })
-        # Remove or update position as needed
         del self.positions[symbol]
 
 
@@ -390,10 +404,40 @@ class EnhancedTradingBot:
         }
 
     def execute_trade(self, symbol, price, shares, strategy):
-        # Only buy if not already in positions and under max concurrent positions
+        # --- RISK RULES ---
         if symbol in self.positions or len(self.positions) >= MAX_CONCURRENT_POSITIONS:
-            return False  # Skip
-        # Add to positions
+            return False
+        if not self.is_trading_hours or self.pause_trading_until and datetime.now() < self.pause_trading_until:
+            return False
+
+        # --- Check for open orders in Alpaca (avoid duplicate BUY orders) ---
+        if not self.is_simulation and self.api:
+            try:
+                open_orders = self.api.list_orders(status='open')
+                for order in open_orders:
+                    # Only block new BUY order if there is already an open BUY order for the symbol
+                    if order.symbol == symbol and order.side == 'buy' and order.status == 'open':
+                        logger.info(f"Open BUY order already exists for {symbol}. Skipping duplicate order.")
+                        return False
+            except Exception as e:
+                logger.error(f"Error checking open orders for {symbol}: {e}")
+                # You may want to skip or continue depending on your risk tolerance
+
+            # If no open BUY order, submit order as before:
+            try:
+                order = self.api.submit_order(
+                    symbol=symbol,
+                    qty=shares,
+                    side='buy',
+                    type='market',
+                    time_in_force='day'
+                )
+                logger.info(f"Alpaca BUY order submitted: {order}")
+            except Exception as e:
+                logger.error(f"Failed to submit Alpaca BUY order: {e}")
+                return False
+
+        # Always update local state for UI/tracking
         self.positions[symbol] = {
             'symbol': symbol,
             'entry_price': price,
@@ -407,7 +451,6 @@ class EnhancedTradingBot:
             'pnl_pct': 0,
             'strategy': strategy
         }
-        # Add to trade log
         self.trades_log.append({
             'date': datetime.now().date(),
             'time': datetime.now().strftime("%H:%M:%S"),
@@ -419,8 +462,8 @@ class EnhancedTradingBot:
             'balance': self.account_balance,
             'strategy': strategy
         })
-        # In real code: Send order to Alpaca here if LIVE
         return True
+
 
 # --- Caching the bot for Streamlit hot reloads ---
 @st.cache_resource
@@ -943,6 +986,21 @@ if __name__ == "__main__":
 
     with tab5:
         st.subheader("🤖 System Information & Configuration")
+
+        if not bot.is_simulation and bot.api:
+            st.markdown("### 📝 Open Orders (Alpaca)")
+            try:
+                open_orders = bot.api.list_orders(status='open')
+                if open_orders:
+                    for order in open_orders:
+                        st.write(
+                            f"**{order.side.upper()}** {order.qty} {order.symbol} @ {order.type.upper()} "
+                            f"– Status: {order.status} – Submitted: {order.submitted_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                else:
+                    st.info("✅ No open orders at Alpaca right now.")
+            except Exception as e:
+                st.error(f"Could not fetch open orders from Alpaca: {e}")
 
         # System status
         col1, col2 = st.columns(2)
