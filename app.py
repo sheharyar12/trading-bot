@@ -241,7 +241,6 @@ class EnhancedTradingBot:
     def _initialize_live_data(self):
         """Fetches real positions and trades from Alpaca"""
         try:
-            # Get current positions
             positions = self.api.list_positions()
             for pos in positions:
                 self.positions[pos.symbol] = {
@@ -258,10 +257,9 @@ class EnhancedTradingBot:
                     'strategy': 'unknown',
                 }
 
-            # Get recent trades (activities)
-            activities = self.api.get_activities(activity_types="FILL", limit=50)
-            for act in activities:
-                # Only include completed orders
+            # FIXED: remove limit argument
+            activities = self.api.get_activities(activity_types="FILL")
+            for act in activities[:50]:   # slice for most recent 50
                 if act.status == 'filled':
                     action = "BUY" if act.side == 'buy' else "SELL"
                     self.trades_log.append({
@@ -271,12 +269,13 @@ class EnhancedTradingBot:
                         'symbol': act.symbol,
                         'price': float(act.price),
                         'shares': int(float(act.qty)),
-                        'pnl': 0,  # Realized P&L can be calculated if desired
+                        'pnl': 0,
                         'balance': self.account_balance,
                         'strategy': 'unknown'
                     })
         except Exception as e:
             logger.error(f"Failed to fetch live data from Alpaca: {e}")
+
 
     def get_stats(self):
         open_positions = sum(1 for p in self.positions.values() if p['status'] == 'OPEN' or p['status'] == 'LONG' or p['status'] == 'SHORT')
